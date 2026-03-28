@@ -5,6 +5,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from collections import Counter
+# Agregar al inicio del archivo, en las importaciones:
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+import re
+from io import BytesIO
 
 # ── CONFIGURACIÓN ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -143,6 +148,82 @@ with tab_general:
         )
 
     st.divider()
+
+    st.divider()
+
+    # ── Wordcloud por candidato ────────────────────────────────────────────
+    st.subheader("¿De qué habla cada candidato?")
+    st.caption(
+        "Nube de palabras generada a partir del texto de sus tweets propios. "
+        "Se excluyen stopwords, URLs, menciones y palabras vacías."
+    )
+
+    # Selector de candidato
+    candidatos_lista = sorted(df_prop["candidato_nombre"].unique().tolist())
+    cand_wc = st.selectbox(
+        "Selecciona un candidato",
+        candidatos_lista,
+        key="wc_candidato",
+    )
+
+    # Stopwords en español + palabras poco informativas para este corpus
+    STOPWORDS_ES = {
+        "de","la","el","en","y","a","los","del","se","las","por","un","para",
+        "con","una","su","al","lo","como","más","pero","sus","le","ya","o",
+        "este","sí","porque","esta","entre","cuando","muy","sin","sobre",
+        "también","me","hasta","hay","donde","han","yo","él","ella","nos",
+        "todo","esta","estos","estas","fue","son","ser","tiene","tenemos",
+        "que","es","no","si","te","mi","tu","http","https","t","co","amp",
+        "rt","via","hoy","ayer","así","bien","gran","cada","hacer","puede",
+        "nuestro","nuestra","nuestros","nuestras","está","están","tiene",
+        "tener","solo","todos","todas","otro","otra","años","Chile","Bolivia",
+        "Ecuador","país","gobierno","presidente","presidenta",
+    }
+
+    @st.cache_data
+    def generar_wordcloud(candidato: str, color: str) -> BytesIO:
+        textos = df_prop[df_prop["candidato_nombre"] == candidato]["text"].dropna()
+
+        # Limpieza del texto
+        def limpiar(texto):
+            texto = re.sub(r"http\S+", "", texto)          # URLs
+            texto = re.sub(r"@\w+", "", texto)             # menciones
+            texto = re.sub(r"#(\w+)", r"\1", texto)        # hashtags → texto
+            texto = re.sub(r"[^\w\sáéíóúüñÁÉÍÓÚÜÑ]", " ", texto)
+            return texto.lower()
+
+        corpus = " ".join(limpiar(t) for t in textos)
+
+        wc = WordCloud(
+            width=900,
+            height=420,
+            background_color="white",
+            color_func=lambda *args, **kwargs: color,
+            stopwords=STOPWORDS_ES,
+            min_word_length=4,
+            max_words=80,
+            collocations=False,
+            prefer_horizontal=0.85,
+        )
+        wc.generate(corpus)
+
+        buf = BytesIO()
+        fig, ax = plt.subplots(figsize=(11, 5))
+        ax.imshow(wc, interpolation="bilinear")
+        ax.axis("off")
+        plt.tight_layout(pad=0)
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+
+    color_wc = COLORES_CANDIDATO.get(cand_wc, "#1F77B4")
+    buf = generar_wordcloud(cand_wc, color_wc)
+
+    pais_wc   = df_prop[df_prop["candidato_nombre"] == cand_wc]["candidato_pais"].iloc[0]
+    tweets_wc = len(df_prop[df_prop["candidato_nombre"] == cand_wc])
+    st.caption(f"🗳️ {pais_wc} · {tweets_wc} tweets analizados")
+    st.image(buf, use_container_width=True)
 
     # Tabla de contexto electoral
     st.subheader("Contexto electoral y cobertura")
