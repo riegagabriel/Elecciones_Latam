@@ -109,7 +109,7 @@ tab_general, tab_chile, tab_bolivia, tab_ecuador, tab_candidato = st.tabs([
 # ════════════════════════════════════════════════════════════════════════════
 with tab_general:
     st.title("🗳️ Observatorio electoral · LATAM 2025")
-    st.markdown(Análisis de plataforma X)
+    st.markdown("Análisis de plataforma X")
     st.divider()
 
     # KPIs
