@@ -396,7 +396,125 @@ tab_general, tab_chile, tab_bolivia, tab_ecuador = st.tabs([
     "🇪🇨 Ecuador",
 ])
 
-# ── TAB GENERAL ────────────────────────────────────────────────────────────────
+
+# ── HELPERS GLOBALES: foto y seguidores desde perfiles CSV ─────────────────────
+# Detectar columna de foto
+_foto_col = None
+if HAY_PERFILES:
+    for _c in ["foto_perfil_url", "profilePicture", "profile_image_url"]:
+        if _c in df_perf.columns:
+            _foto_col = _c
+            break
+
+# Detectar columna de id y seguidores
+_id_col  = "nombre_real" if HAY_PERFILES and "nombre_real" in df_perf.columns else "username"
+_seg_col = None
+if HAY_PERFILES:
+    for _c in ["seguidores", "followers", "seguidores_snapshot_hoy"]:
+        if _c in df_perf.columns:
+            _seg_col = _c
+            break
+
+def get_foto(nombre):
+    if not HAY_PERFILES or _foto_col is None:
+        return None
+    fila = df_perf[df_perf[_id_col] == nombre]
+    if fila.empty:
+        return None
+    url = fila.iloc[0][_foto_col]
+    return str(url) if pd.notna(url) else None
+
+def get_seguidores(nombre):
+    if not HAY_PERFILES or _seg_col is None:
+        return None
+    fila = df_perf[df_perf[_id_col] == nombre]
+    if fila.empty:
+        return None
+    val = fila.iloc[0][_seg_col]
+    return int(val) if pd.notna(val) else None
+
+# ── CONTEXTO ELECTORAL (texto narrativo) ──────────────────────────────────────
+CONTEXTO = {
+    "Ecuador": {
+        "ganador":  "Daniel Noboa",
+        "resultado": "Noboa se impuso con un 55,63% en la segunda vuelta (13 abr 2025).",
+        "narrativa": (
+            "El calendario del CNE estableció el inicio oficial de campaña el **5 de enero de 2025**. "
+            "La primera vuelta se celebró el **9 de febrero** y la segunda vuelta el **13 de abril**. "
+            "El debate presidencial del **23 de marzo** fue el hito central: González interpeló a Noboa "
+            "por incumplimiento de promesas, mientras Noboa posicionó la narrativa del *'Nuevo Ecuador'* "
+            "frente al *'pasado fallido'*. En X, Noboa priorizó hitos de gestión en seguridad y evitó "
+            "la confrontación directa; González utilizó la plataforma para denunciar la falta de un plan "
+            "de seguridad en un contexto de alta violencia."
+        ),
+        "debate_clave": "23 de marzo de 2025 — Debate presidencial 2ª vuelta",
+        "periodo": "5 ene – 13 abr 2025",
+        "vuelta": "2da vuelta",
+        "n_cands": 2,
+    },
+    "Bolivia": {
+        "ganador":  "Rodrigo Paz Pereira",
+        "resultado": "Paz Pereira resultó electo en la segunda vuelta (19 oct 2025), marcando el mayor giro hacia la centroderecha en dos décadas.",
+        "narrativa": (
+            "Bolivia vivió en 2025 el desplome electoral más significativo del MAS en dos décadas. "
+            "La primera vuelta (**17 de agosto**) fragmentó el voto oficialista, permitiendo el pase "
+            "de Paz Pereira y Quiroga al balotaje del **19 de octubre**. "
+            "El debate del **12 de octubre** fue el punto de inflexión: ambos se comprometieron a "
+            "respetar los resultados para garantizar la paz social. Quiroga utilizó X como plataforma "
+            "de denuncia internacional y propuesta técnica; Paz se posicionó como candidato de la "
+            "*'renovación'*. Su moderación en X frente al tono más combativo de Quiroga le habría "
+            "permitido capturar el voto útil de una población agotada por la polarización."
+        ),
+        "debate_clave": "12 de octubre de 2025 — Debate presidencial 2ª vuelta",
+        "periodo": "13 jul – 19 oct 2025",
+        "vuelta": "2da vuelta",
+        "n_cands": 2,
+    },
+    "Chile": {
+        "ganador":  "José Antonio Kast",
+        "resultado": "Kast se impuso con un 58,17% en el balotaje del 14 de diciembre de 2025.",
+        "narrativa": (
+            "Las elecciones de Chile representaron el péndulo político más extremo de su historia reciente. "
+            "La primera vuelta (**16 de noviembre**) dejó fuera a Matthei y Parisi. El balotaje del "
+            "**14 de diciembre** enfrentó a la oficialista Jara contra Kast. "
+            "La campaña tuvo tres debates clave: el **10 de septiembre** en Chilevisión (8 candidatos), "
+            "el **4 de noviembre** en ARCHI y el **10 de noviembre** en ANATEL. "
+            "En X, Kast lideró el engagement con narrativas de orden y seguridad; Matthei buscó "
+            "proyectar gobernabilidad institucional, aunque un pacto de no agresión en la derecha "
+            "terminó favoreciendo a Kast; Jara defendió las reformas sociales del gobierno pero fue "
+            "interpelada constantemente por la continuidad del programa oficialista."
+        ),
+        "debate_clave": "10 nov 2025 — Debate ANATEL (último antes de 1ª vuelta)",
+        "periodo": "17 sept – 14 dic 2025",
+        "vuelta": "1ra y 2da vuelta",
+        "n_cands": 5,
+    },
+}
+
+def render_contexto_pais(pais):
+    """Banner narrativo con el contexto electoral del país."""
+    ctx = CONTEXTO.get(pais, {})
+    if not ctx:
+        return
+    color = COLORES_PAIS[pais]
+    st.markdown(
+        f"<div style='background:{color}12;border-left:4px solid {color};"
+        f"padding:12px 16px;border-radius:6px;margin-bottom:16px'>"
+        f"<p style='margin:0 0 4px;font-size:0.8em;color:{color};font-weight:600;'>"
+        f"🏆 RESULTADO · {ctx['periodo']} · {ctx['vuelta']}</p>"
+        f"<p style='margin:0 0 6px;font-weight:600;font-size:1em'>{ctx['resultado']}</p>"
+        f"<p style='margin:0;font-size:0.85em;color:#444;'>"
+        f"📅 Debate clave: {ctx['debate_clave']}</p>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    with st.expander("📖 Contexto electoral completo"):
+        st.markdown(ctx["narrativa"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB GENERAL
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_general:
     st.subheader("Resumen general")
     st.markdown(
@@ -406,106 +524,68 @@ with tab_general:
 
     # ── KPIs globales ──────────────────────────────────────────────────────
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Países",          3)
-    c2.metric("Candidatos",      df["candidato_nombre"].nunique())
-    c3.metric("Tweets propios",  fmt(len(df_prop)))
-    c4.metric("Likes totales",   fmt(df_prop["like_count"].sum()))
-    c5.metric("Views totales",   fmt(df_prop["view_count"].sum()))
-    c6.metric("Retweets",        fmt(df_prop["retweet_count"].sum()))
+    c1.metric("Países",         3)
+    c2.metric("Candidatos",     df["candidato_nombre"].nunique())
+    c3.metric("Tweets propios", fmt(len(df_prop)))
+    c4.metric("Likes totales",  fmt(df_prop["like_count"].sum()))
+    c5.metric("Views totales",  fmt(df_prop["view_count"].sum()))
+    c6.metric("Retweets",       fmt(df_prop["retweet_count"].sum()))
 
     st.divider()
 
-    # ── Tarjetas de candidatos con foto ───────────────────────────────────
+    # ── Tarjetas de candidatos con selector de país ────────────────────────
     st.subheader("Los candidatos")
 
-    # Preparar métricas por candidato (reutilizado más abajo)
+    # Métricas base
     met_cands = metricas(df_prop).merge(
         df_prop[["candidato_nombre","candidato_pais","candidato_vuelta","periodo_busqueda"]]
         .drop_duplicates("candidato_nombre"),
         on="candidato_nombre", how="left"
     )
 
-    # Columna de foto de perfil
-    foto_col = None
-    if HAY_PERFILES:
-        for c in ["foto_perfil_url","profilePicture","profile_image_url"]:
-            if c in df_perf.columns:
-                foto_col = c
-                break
+    # Selector de país — botones con st.pills (Streamlit ≥1.43) o radio fallback
+    opciones_pais = ["🇨🇱  Chile", "🇧🇴  Bolivia", "🇪🇨  Ecuador"]
+    mapa_pais     = {"🇨🇱  Chile": "Chile", "🇧🇴  Bolivia": "Bolivia", "🇪🇨  Ecuador": "Ecuador"}
 
-    def get_foto(nombre):
-        if not HAY_PERFILES or foto_col is None:
-            return None
-        col_id = "nombre_real" if "nombre_real" in df_perf.columns else "username"
-        row = df_perf[df_perf[col_id] == nombre]
-        if row.empty:
-            return None
-        url = row.iloc[0][foto_col]
-        return url if pd.notna(url) else None
+    try:
+        pais_btn = st.pills(
+            "Selecciona un país:",
+            opciones_pais,
+            default="🇨🇱  Chile",
+            key="pills_pais",
+        )
+        pais_sel = mapa_pais.get(pais_btn, "Chile")
+    except AttributeError:
+        # Fallback para versiones anteriores de Streamlit
+        opcion = st.radio(
+            "Selecciona un país:",
+            opciones_pais,
+            horizontal=True,
+            key="radio_pais_home",
+        )
+        pais_sel = mapa_pais.get(opcion, "Chile")
 
-    def get_seguidores(nombre):
-        if not HAY_PERFILES:
-            return None
-        col_id  = "nombre_real" if "nombre_real" in df_perf.columns else "username"
-        col_seg = next((c for c in ["seguidores","followers","seguidores_snapshot_hoy"]
-                        if c in df_perf.columns), None)
-        if col_seg is None:
-            return None
-        row = df_perf[df_perf[col_id] == nombre]
-        if row.empty:
-            return None
-        val = row.iloc[0][col_seg]
-        return int(val) if pd.notna(val) else None
-
-    # Selector de bandera
-    BANDERAS = {"🇨🇱 Chile": "Chile", "🇧🇴 Bolivia": "Bolivia", "🇪🇨 Ecuador": "Ecuador"}
-    bandera_sel = st.radio(
-        "Selecciona un país para ver sus candidatos:",
-        list(BANDERAS.keys()),
-        horizontal=True,
-        key="bandera_home",
-        label_visibility="visible",
-    )
-    pais_sel = BANDERAS[bandera_sel]
     color_pais = COLORES_PAIS[pais_sel]
 
-    # Contexto del país
-    INFO_PAIS = {
-        "Chile":   ("17 sept – 14 dic 2025", "1ra y 2da vuelta", 5),
-        "Bolivia": ("13 jul – 19 oct 2025",  "2da vuelta",       2),
-        "Ecuador": ("5 ene – 13 abr 2025",   "2da vuelta",       2),
-    }
-    periodo, vuelta, n_cands = INFO_PAIS[pais_sel]
-    st.markdown(
-        f"<div style='background:{color_pais}18;border-left:4px solid {color_pais};"
-        f"padding:8px 14px;border-radius:4px;margin-bottom:16px;"
-        f"font-size:0.9em;color:#333'>"
-        f"📅 <b>{periodo}</b> · {vuelta} · {n_cands} candidatos analizados"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    # Banner de contexto electoral
+    render_contexto_pais(pais_sel)
 
-    # Tarjetas de candidatos del país seleccionado
+    # Tarjetas
     cands_pais = met_cands[met_cands["candidato_pais"] == pais_sel].sort_values(
         "likes", ascending=False
     )
     cols_cands = st.columns(len(cands_pais))
     for col, (_, row) in zip(cols_cands, cands_pais.iterrows()):
-        nombre    = row["candidato_nombre"]
-        foto      = get_foto(nombre)
+        nombre     = row["candidato_nombre"]
+        foto       = get_foto(nombre)
         seguidores = get_seguidores(nombre)
-        color_c   = COLORES_CANDIDATO.get(nombre, color_pais)
 
         with col:
             with st.container(border=True):
-                # st.image acepta URLs externas — el HTML <img> no funciona en Streamlit
                 if foto:
-                    st.image(foto, width=80)
-                st.markdown(
-                    f"**{nombre}**  \n"
-                    f"<span style='font-size:0.8em;color:#888'>{row['candidato_vuelta']}</span>",
-                    unsafe_allow_html=True,
-                )
+                    st.image(foto, width=90)
+                st.markdown(f"**{nombre}**")
+                st.caption(row["candidato_vuelta"])
                 st.divider()
                 m1, m2 = st.columns(2)
                 m1.metric("❤️ Likes",  fmt(row["likes"]))
@@ -520,8 +600,8 @@ with tab_general:
     # ── Volumen vs eficiencia ──────────────────────────────────────────────
     st.subheader("Volumen vs eficiencia")
     nota(
-        "Única vista multi-país: normaliza por likes/tweet para comparar "
-        "candidatos con contextos electorales distintos. "
+        "Única vista multi-país. Normaliza por likes/tweet para comparar candidatos "
+        "con contextos electorales distintos. "
         "Eje X = cuánto publica · Eje Y = cuánto resuena · Tamaño = views totales."
     )
     fig_burbuja = px.scatter(
@@ -547,16 +627,16 @@ with tab_general:
 
     st.divider()
 
-    # ── Tabla resumen ──────────────────────────────────────────────────────
+    # ── Tabla de contexto ──────────────────────────────────────────────────
     st.subheader("Tabla de contexto")
-    nota("Condiciones de cada candidato: período analizado, vuelta electoral y métricas clave.")
+    nota("Período analizado, vuelta electoral y métricas clave de cada candidato.")
 
     tabla = met_cands[["candidato_pais","candidato_nombre","candidato_vuelta",
                         "periodo_busqueda","tweets","likes","views","likes_x_tweet"]].copy()
     tabla = tabla.sort_values(["candidato_pais","likes"], ascending=[True, False])
     tabla.columns = ["País","Candidato","Vuelta","Período","Tweets","Likes","Views","Likes/tweet"]
-    for col in ["Likes","Views"]:
-        tabla[col] = tabla[col].apply(lambda x: f"{int(x):,}")
+    for c in ["Likes","Views"]:
+        tabla[c] = tabla[c].apply(lambda x: f"{int(x):,}")
     st.dataframe(tabla, use_container_width=True, hide_index=True)
 
     st.divider()
@@ -567,6 +647,9 @@ with tab_general:
     with st.container(border=True):
         col_v1, col_v2 = st.columns([3, 1])
         with col_v1:
+            foto_viral = get_foto(viral["candidato_nombre"])
+            if foto_viral:
+                st.image(foto_viral, width=48)
             st.markdown(
                 f"**{viral['candidato_nombre']}** · {viral['candidato_pais']} · "
                 f"{str(viral['created_at'])[:10]}"
@@ -587,28 +670,29 @@ with tab_general:
         "Términos más frecuentes en los tweets propios. "
         "Tamaño proporcional a la frecuencia. Stopwords, URLs y menciones eliminados."
     )
-
     candidatos_lista = sorted(df_prop["candidato_nombre"].unique().tolist())
-    wc_cand = st.selectbox("Selecciona un candidato:", candidatos_lista, key="wc_home")
+    wc_cand  = st.selectbox("Selecciona un candidato:", candidatos_lista, key="wc_home")
     color_wc = COLORES_CANDIDATO.get(wc_cand, "#1F77B4")
     pais_wc  = df_prop[df_prop["candidato_nombre"] == wc_cand]["candidato_pais"].iloc[0]
     n_wc     = len(df_prop[df_prop["candidato_nombre"] == wc_cand])
     st.caption(f"{pais_wc} · {n_wc} tweets analizados")
-    buf = generar_wordcloud(wc_cand, color_wc)
-    st.image(buf, use_container_width=True)
+    st.image(generar_wordcloud(wc_cand, color_wc), use_container_width=True)
 
-# ── TABS PAÍS ──────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TABS PAÍS — con contexto electoral al inicio
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_chile:
     st.subheader("🇨🇱 Chile — Elecciones presidenciales 2025")
-    st.caption("17 sept – 14 dic 2025 · 1ra y 2da vuelta · 5 candidatos")
+    render_contexto_pais("Chile")
     render_pais("Chile")
 
 with tab_bolivia:
     st.subheader("🇧🇴 Bolivia — Elecciones presidenciales 2025")
-    st.caption("13 jul – 19 oct 2025 · 2da vuelta · 2 candidatos")
+    render_contexto_pais("Bolivia")
     render_pais("Bolivia")
 
 with tab_ecuador:
     st.subheader("🇪🇨 Ecuador — Elecciones presidenciales 2025")
-    st.caption("5 ene – 13 abr 2025 · 2da vuelta · 2 candidatos")
+    render_contexto_pais("Ecuador")
     render_pais("Ecuador")
