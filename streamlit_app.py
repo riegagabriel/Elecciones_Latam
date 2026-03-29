@@ -360,7 +360,7 @@ def render_timeline_hitos(pais: str, data: pd.DataFrame, ctx: str = "tab"):
             yanchor="top",
         )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"timeline_{pais}_{ctx}")
     nota(
         "Las líneas verticales marcan hitos electorales clave: debates y fechas de votación. "
         "Observa si los picos de engagement coinciden con estos momentos o si la conversación "
@@ -407,7 +407,7 @@ def render_opinion(pais: str):
         color_discrete_sequence=[color],
     )
     fig_ev.update_layout(showlegend=False, height=220, margin=dict(t=10, b=10))
-    st.plotly_chart(fig_ev, use_container_width=True)
+    st.plotly_chart(fig_ev, use_container_width=True, key=f"op_ev_{pais}_{candidato_sel}")
     nota("Los picos indican semanas con mayor conversación ciudadana. Pueden coincidir con debates o hitos electorales.")
 
     if "hashtags" in d.columns:
@@ -422,7 +422,7 @@ def render_opinion(pais: str):
             )
             fig_ht.update_traces(textposition="outside")
             fig_ht.update_layout(showlegend=False, height=280, margin=dict(t=10))
-            st.plotly_chart(fig_ht, use_container_width=True)
+            st.plotly_chart(fig_ht, use_container_width=True, key=f"op_ht_{pais}_{candidato_sel}")
 
     st.markdown("**Tweets ciudadanos con más likes sobre este candidato**")
     col_rt = "retweet_count" if "retweet_count" in d.columns else None
@@ -464,7 +464,7 @@ def render_pais(pais: str):
         )
         fig_likes.update_traces(texttemplate="%{text:,}", textposition="outside")
         fig_likes.update_layout(showlegend=False, height=300)
-        st.plotly_chart(fig_likes, use_container_width=True)
+        st.plotly_chart(fig_likes, use_container_width=True, key=f"likes_{pais}")
     with col2:
         fig_lpt = px.bar(
             met.sort_values("likes_x_tweet"),
@@ -475,7 +475,7 @@ def render_pais(pais: str):
         )
         fig_lpt.update_traces(texttemplate="%{text:,}", textposition="outside")
         fig_lpt.update_layout(showlegend=False, height=300)
-        st.plotly_chart(fig_lpt, use_container_width=True)
+        st.plotly_chart(fig_lpt, use_container_width=True, key=f"lpt_{pais}")
 
     st.divider()
 
@@ -499,7 +499,7 @@ def render_pais(pais: str):
         )
         fig_ht.update_traces(textposition="outside")
         fig_ht.update_layout(showlegend=False, height=max(280, len(ht)*32))
-        st.plotly_chart(fig_ht, use_container_width=True)
+        st.plotly_chart(fig_ht, use_container_width=True, key=f"ht_{pais}_{candidato_ht}")
 
     st.divider()
 
@@ -626,7 +626,7 @@ with tab_general:
         size_max=55,
     )
     fig_burbuja.update_layout(height=420, legend_title="País")
-    st.plotly_chart(fig_burbuja, use_container_width=True)
+    st.plotly_chart(fig_burbuja, use_container_width=True, key="burbuja_global")
 
     st.divider()
 
