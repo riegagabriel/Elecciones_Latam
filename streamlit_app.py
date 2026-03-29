@@ -201,7 +201,9 @@ def get_foto(nombre):
     if perfil is None:
         return None
     url = perfil[_foto_col]
-    return str(url) if pd.notna(url) and str(url).startswith("http") else None
+    if not pd.notna(url) or not str(url).startswith("http"):
+        return None
+    return str(url).replace("_normal.", "_400x400.")
 
 def get_seguidores(nombre):
     if not HAY_PERFILES or _seg_col is None:
