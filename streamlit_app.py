@@ -5,6 +5,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from collections import Counter
+import re
+from io import BytesIO
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+import glob
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -64,10 +69,20 @@ def load_opinion():
     except FileNotFoundError:
         return pd.DataFrame()
 
-df      = load_data()
-df_prop = df[~df["is_retweet"]].copy()
-df_op   = load_opinion()
-HAY_OPINION = not df_op.empty
+@st.cache_data
+def load_perfiles():
+    # Busca cualquier archivo perfiles_*.csv en /data
+    archivos = glob.glob("data/perfiles_*.csv")
+    if not archivos:
+        return pd.DataFrame()
+    return pd.read_csv(sorted(archivos)[-1])
+
+df       = load_data()
+df_prop  = df[~df["is_retweet"]].copy()
+df_op    = load_opinion()
+df_perf  = load_perfiles()
+HAY_OPINION  = not df_op.empty
+HAY_PERFILES = not df_perf.empty
 
 # ── HELPERS ────────────────────────────────────────────────────────────────────
 def fmt(n):
@@ -100,6 +115,46 @@ def nota(texto):
         f"margin-bottom:10px'>💡 {texto}</div>",
         unsafe_allow_html=True,
     )
+
+STOPWORDS_ES = {
+    "de","la","el","en","y","a","los","del","se","las","por","un","para",
+    "con","una","su","al","lo","como","más","pero","sus","le","ya","o",
+    "este","sí","porque","esta","entre","cuando","muy","sin","sobre",
+    "también","me","hasta","hay","donde","han","yo","él","ella","nos",
+    "todo","estos","estas","fue","son","ser","tiene","tenemos","que","es",
+    "no","si","te","mi","tu","http","https","t","co","amp","rt","via",
+    "hoy","ayer","así","bien","gran","cada","hacer","puede","nuestro",
+    "nuestra","nuestros","nuestras","está","están","tener","solo","todos",
+    "todas","otro","otra","años","Chile","Bolivia","Ecuador","país",
+    "gobierno","presidente","presidenta","hemos","sido","ser","esto",
+}
+
+@st.cache_data
+def generar_wordcloud(candidato: str, color: str) -> BytesIO:
+    textos = df_prop[df_prop["candidato_nombre"] == candidato]["text"].dropna()
+    def limpiar(t):
+        t = re.sub(r"http\S+", "", t)
+        t = re.sub(r"@\w+", "", t)
+        t = re.sub(r"#(\w+)", r"\1", t)
+        t = re.sub(r"[^\w\sáéíóúüñÁÉÍÓÚÜÑ]", " ", t)
+        return t.lower()
+    corpus = " ".join(limpiar(t) for t in textos)
+    wc = WordCloud(
+        width=700, height=320, background_color="white",
+        color_func=lambda *a, **k: color,
+        stopwords=STOPWORDS_ES, min_word_length=4,
+        max_words=60, collocations=False, prefer_horizontal=0.85,
+    )
+    wc.generate(corpus)
+    buf = BytesIO()
+    fig, ax = plt.subplots(figsize=(7, 3.2))
+    ax.imshow(wc, interpolation="bilinear")
+    ax.axis("off")
+    plt.tight_layout(pad=0)
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -349,26 +404,88 @@ with tab_general:
         "Chile, Bolivia y Ecuador durante sus respectivos períodos electorales de 2025."
     )
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Candidatos",     df["candidato_nombre"].nunique())
-    c2.metric("Tweets propios", fmt(len(df_prop)))
-    c3.metric("Likes totales",  fmt(df_prop["like_count"].sum()))
-    c4.metric("Views totales",  fmt(df_prop["view_count"].sum()))
+    # ── KPIs globales ──────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Países",          3)
+    c2.metric("Candidatos",      df["candidato_nombre"].nunique())
+    c3.metric("Tweets propios",  fmt(len(df_prop)))
+    c4.metric("Likes totales",   fmt(df_prop["like_count"].sum()))
+    c5.metric("Views totales",   fmt(df_prop["view_count"].sum()))
+    c6.metric("Retweets",        fmt(df_prop["retweet_count"].sum()))
 
     st.divider()
 
-    st.subheader("Volumen vs eficiencia")
-    st.caption(
-        "Vista multi-país: normaliza por likes/tweet para comparar candidatos "
-        "con contextos electorales distintos."
+    # ── Tarjetas de candidatos con foto ───────────────────────────────────
+    st.subheader("Los candidatos")
+    nota(
+        "Foto de perfil oficial de Twitter/X · "
+        "Datos capturados durante el período electoral de cada candidato."
     )
-    met_global = metricas(df_prop)
-    met_global = met_global.merge(
-        df_prop[["candidato_nombre", "candidato_pais"]].drop_duplicates(),
+
+    # Preparar métricas por candidato
+    met_cands = metricas(df_prop).merge(
+        df_prop[["candidato_nombre","candidato_pais","candidato_vuelta","periodo_busqueda"]]
+        .drop_duplicates("candidato_nombre"),
         on="candidato_nombre", how="left"
     )
+
+    # Foto de perfil desde perfiles CSV (columna foto_perfil_url)
+    foto_col = None
+    if HAY_PERFILES:
+        for c in ["foto_perfil_url","profilePicture","profile_image_url"]:
+            if c in df_perf.columns:
+                foto_col = c
+                break
+
+    def get_foto(nombre):
+        if not HAY_PERFILES or foto_col is None:
+            return None
+        row = df_perf[df_perf["nombre_real"] == nombre] if "nombre_real" in df_perf.columns \
+              else df_perf[df_perf["username"] == nombre]
+        if row.empty:
+            return None
+        url = row.iloc[0][foto_col]
+        return url if pd.notna(url) else None
+
+    # Agrupar por país
+    for pais in ["Chile", "Bolivia", "Ecuador"]:
+        cands_pais = met_cands[met_cands["candidato_pais"] == pais].sort_values(
+            "likes", ascending=False
+        )
+        st.markdown(
+            f"<p style='font-weight:600;font-size:1em;color:{COLORES_PAIS[pais]};"
+            f"margin-bottom:6px;margin-top:8px'>{pais}</p>",
+            unsafe_allow_html=True,
+        )
+        cols = st.columns(len(cands_pais))
+        for col, (_, row) in zip(cols, cands_pais.iterrows()):
+            with col:
+                foto = get_foto(row["candidato_nombre"])
+                if foto:
+                    st.image(foto, width=72)
+                st.markdown(
+                    f"**{row['candidato_nombre']}**  \n"
+                    f"<span style='font-size:0.8em;color:#666'>"
+                    f"{row['candidato_vuelta']}</span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"❤️ **{fmt(row['likes'])}** likes  \n"
+                    f"📄 {fmt(row['tweets'])} tweets  \n"
+                    f"⚡ {fmt(row['likes_x_tweet'])} likes/tweet"
+                )
+
+    st.divider()
+
+    # ── Volumen vs eficiencia ──────────────────────────────────────────────
+    st.subheader("Volumen vs eficiencia")
+    nota(
+        "Única vista multi-país: normaliza por likes/tweet para comparar "
+        "candidatos con contextos electorales distintos. "
+        "Eje X = cuánto publica · Eje Y = cuánto resuena · Tamaño = views totales."
+    )
     fig_burbuja = px.scatter(
-        met_global,
+        met_cands,
         x="tweets", y="likes_x_tweet",
         size="views", color="candidato_pais",
         color_discrete_map=COLORES_PAIS,
@@ -385,12 +502,60 @@ with tab_general:
         },
         size_max=55,
     )
-    fig_burbuja.update_layout(height=440, legend_title="País")
+    fig_burbuja.update_layout(height=420, legend_title="País")
     st.plotly_chart(fig_burbuja, use_container_width=True)
+
+    st.divider()
+
+    # ── Tabla resumen ──────────────────────────────────────────────────────
+    st.subheader("Tabla de contexto")
+    nota("Condiciones de cada candidato: período analizado, vuelta electoral y métricas clave.")
+
+    tabla = met_cands[["candidato_pais","candidato_nombre","candidato_vuelta",
+                        "periodo_busqueda","tweets","likes","views","likes_x_tweet"]].copy()
+    tabla = tabla.sort_values(["candidato_pais","likes"], ascending=[True, False])
+    tabla.columns = ["País","Candidato","Vuelta","Período","Tweets","Likes","Views","Likes/tweet"]
+    for col in ["Likes","Views"]:
+        tabla[col] = tabla[col].apply(lambda x: f"{int(x):,}")
+    st.dataframe(tabla, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Tweet más viral global ─────────────────────────────────────────────
+    st.subheader("🔥 El tweet más viral del período")
+    viral = df_prop.sort_values("like_count", ascending=False).iloc[0]
+    with st.container(border=True):
+        col_v1, col_v2 = st.columns([3, 1])
+        with col_v1:
+            st.markdown(
+                f"**{viral['candidato_nombre']}** · {viral['candidato_pais']} · "
+                f"{str(viral['created_at'])[:10]}"
+            )
+            st.markdown(f"> {str(viral['text'])[:300]}")
+            if pd.notna(viral.get("tweet_url", "")):
+                st.markdown(f"[Ver en X ↗]({viral['tweet_url']})")
+        with col_v2:
+            st.metric("❤️ Likes",  fmt(viral["like_count"]))
+            st.metric("🔁 RTs",    fmt(viral["retweet_count"]))
+            st.metric("👁️ Views",  fmt(viral["view_count"]))
+
+    st.divider()
+
+    # ── Wordcloud ──────────────────────────────────────────────────────────
+    st.subheader("¿De qué habla cada candidato?")
     nota(
-        "Eje X = cuánto publica · Eje Y = cuánto resuena cada tweet · "
-        "Tamaño = views totales. Arriba a la derecha es la combinación ideal."
+        "Términos más frecuentes en los tweets propios. "
+        "Tamaño proporcional a la frecuencia. Stopwords, URLs y menciones eliminados."
     )
+
+    candidatos_lista = sorted(df_prop["candidato_nombre"].unique().tolist())
+    wc_cand = st.selectbox("Selecciona un candidato:", candidatos_lista, key="wc_home")
+    color_wc = COLORES_CANDIDATO.get(wc_cand, "#1F77B4")
+    pais_wc  = df_prop[df_prop["candidato_nombre"] == wc_cand]["candidato_pais"].iloc[0]
+    n_wc     = len(df_prop[df_prop["candidato_nombre"] == wc_cand])
+    st.caption(f"{pais_wc} · {n_wc} tweets analizados")
+    buf = generar_wordcloud(wc_cand, color_wc)
+    st.image(buf, use_container_width=True)
 
 # ── TABS PAÍS ──────────────────────────────────────────────────────────────────
 with tab_chile:
