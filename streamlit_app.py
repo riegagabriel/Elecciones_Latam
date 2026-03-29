@@ -4,6 +4,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from collections import Counter
 import re
 from io import BytesIO
@@ -34,6 +35,76 @@ COLORES_PAIS = {
     "Chile":   "#D62728",
     "Bolivia": "#2CA02C",
     "Ecuador": "#1F77B4",
+}
+
+# ── HITOS ELECTORALES para anotaciones en gráfico ─────────────────────────────
+HITOS = {
+    "Ecuador": [
+        {"fecha": "2025-02-09", "label": "1ª vuelta"},
+        {"fecha": "2025-03-23", "label": "Debate 2ª vuelta"},
+        {"fecha": "2025-04-13", "label": "2ª vuelta"},
+    ],
+    "Bolivia": [
+        {"fecha": "2025-08-17", "label": "1ª vuelta"},
+        {"fecha": "2025-10-12", "label": "Debate balotaje"},
+        {"fecha": "2025-10-19", "label": "2ª vuelta"},
+    ],
+    "Chile": [
+        {"fecha": "2025-09-10", "label": "Debate CHV"},
+        {"fecha": "2025-11-04", "label": "Debate ARCHI"},
+        {"fecha": "2025-11-10", "label": "Debate ANATEL"},
+        {"fecha": "2025-11-16", "label": "1ª vuelta"},
+        {"fecha": "2025-12-14", "label": "2ª vuelta"},
+    ],
+}
+
+CONTEXTO = {
+    "Ecuador": {
+        "resultado": "Noboa se impuso con un 55,63% en la segunda vuelta (13 abr 2025).",
+        "narrativa": (
+            "El calendario del CNE estableció el inicio oficial de campaña el **5 de enero de 2025**. "
+            "La primera vuelta se celebró el **9 de febrero** y la segunda vuelta el **13 de abril**. "
+            "El debate presidencial del **23 de marzo** fue el hito central: González interpeló a Noboa "
+            "por incumplimiento de promesas, mientras Noboa posicionó la narrativa del *'Nuevo Ecuador'* "
+            "frente al *'pasado fallido'*. En X, Noboa priorizó hitos de gestión en seguridad y evitó "
+            "la confrontación directa; González utilizó la plataforma para denunciar la falta de un plan "
+            "de seguridad en un contexto de alta violencia."
+        ),
+        "debate_clave": "23 de marzo de 2025 — Debate presidencial 2ª vuelta",
+        "periodo": "5 ene – 13 abr 2025",
+        "vuelta": "2da vuelta",
+    },
+    "Bolivia": {
+        "resultado": "Paz Pereira resultó electo (19 oct 2025), marcando el mayor giro hacia la centroderecha en dos décadas.",
+        "narrativa": (
+            "Bolivia vivió el desplome electoral más significativo del MAS en dos décadas. "
+            "La primera vuelta (**17 de agosto**) fragmentó el voto oficialista, permitiendo el pase "
+            "de Paz Pereira y Quiroga al balotaje del **19 de octubre**. "
+            "El debate del **12 de octubre** fue el punto de inflexión: ambos se comprometieron a "
+            "respetar los resultados. Quiroga utilizó X como plataforma de denuncia internacional; "
+            "Paz se posicionó como candidato de la *'renovación'*. Su moderación en X frente al tono "
+            "más combativo de Quiroga le habría permitido capturar el voto útil."
+        ),
+        "debate_clave": "12 de octubre de 2025 — Debate presidencial 2ª vuelta",
+        "periodo": "13 jul – 19 oct 2025",
+        "vuelta": "2da vuelta",
+    },
+    "Chile": {
+        "resultado": "Kast se impuso con un 58,17% en el balotaje del 14 de diciembre de 2025.",
+        "narrativa": (
+            "Las elecciones de Chile representaron el péndulo político más extremo de su historia reciente. "
+            "La primera vuelta (**16 de noviembre**) dejó fuera a Matthei y Parisi. El balotaje del "
+            "**14 de diciembre** enfrentó a la oficialista Jara contra Kast. "
+            "La campaña tuvo tres debates clave: **10 de septiembre** en Chilevisión, "
+            "**4 de noviembre** en ARCHI y **10 de noviembre** en ANATEL. "
+            "En X, Kast lideró el engagement con narrativas de orden y seguridad; Matthei buscó "
+            "gobernabilidad institucional; Jara defendió las reformas sociales pero fue interpelada "
+            "constantemente por la continuidad del programa oficialista."
+        ),
+        "debate_clave": "10 nov 2025 — Debate ANATEL (último antes de 1ª vuelta)",
+        "periodo": "17 sept – 14 dic 2025",
+        "vuelta": "1ra y 2da vuelta",
+    },
 }
 
 # ── CARGA DE DATOS ─────────────────────────────────────────────────────────────
@@ -71,7 +142,6 @@ def load_opinion():
 
 @st.cache_data
 def load_perfiles():
-    # Busca cualquier archivo perfiles_*.csv en /data
     archivos = glob.glob("data/perfiles_*.csv")
     if not archivos:
         return pd.DataFrame()
@@ -84,7 +154,65 @@ df_perf  = load_perfiles()
 HAY_OPINION  = not df_op.empty
 HAY_PERFILES = not df_perf.empty
 
-# ── HELPERS ────────────────────────────────────────────────────────────────────
+# ── HELPERS DE PERFILES ────────────────────────────────────────────────────────
+# Detectar columnas disponibles una sola vez al inicio
+_foto_col = None
+_id_col   = None
+_seg_col  = None
+
+if HAY_PERFILES:
+    for c in ["foto_perfil_url", "profilePicture", "profile_image_url"]:
+        if c in df_perf.columns:
+            _foto_col = c
+            break
+    for c in ["nombre_real", "nombre_display", "username"]:
+        if c in df_perf.columns:
+            _id_col = c
+            break
+    for c in ["seguidores", "followers", "seguidores_snapshot_hoy"]:
+        if c in df_perf.columns:
+            _seg_col = c
+            break
+
+def _buscar_perfil(nombre):
+    """Busca la fila del candidato en df_perf probando múltiples columnas de id."""
+    if not HAY_PERFILES:
+        return None
+    # Intentar match exacto en todas las columnas candidatas
+    for col in ["nombre_real", "nombre_display", "username", "name"]:
+        if col in df_perf.columns:
+            fila = df_perf[df_perf[col] == nombre]
+            if not fila.empty:
+                return fila.iloc[0]
+    # Fallback: match parcial en nombre_real o nombre_display
+    for col in ["nombre_real", "nombre_display"]:
+        if col in df_perf.columns:
+            fila = df_perf[df_perf[col].str.contains(
+                nombre.split()[0], case=False, na=False
+            )]
+            if not fila.empty:
+                return fila.iloc[0]
+    return None
+
+def get_foto(nombre):
+    if not HAY_PERFILES or _foto_col is None:
+        return None
+    perfil = _buscar_perfil(nombre)
+    if perfil is None:
+        return None
+    url = perfil[_foto_col]
+    return str(url) if pd.notna(url) and str(url).startswith("http") else None
+
+def get_seguidores(nombre):
+    if not HAY_PERFILES or _seg_col is None:
+        return None
+    perfil = _buscar_perfil(nombre)
+    if perfil is None:
+        return None
+    val = perfil[_seg_col]
+    return int(val) if pd.notna(val) else None
+
+# ── HELPERS GENERALES ──────────────────────────────────────────────────────────
 def fmt(n):
     if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
     if n >= 1_000:     return f"{n/1_000:.0f}k"
@@ -116,6 +244,26 @@ def nota(texto):
         unsafe_allow_html=True,
     )
 
+def render_contexto_pais(pais):
+    ctx = CONTEXTO.get(pais, {})
+    if not ctx:
+        return
+    color = COLORES_PAIS[pais]
+    st.markdown(
+        f"<div style='background:{color}12;border-left:4px solid {color};"
+        f"padding:12px 16px;border-radius:6px;margin-bottom:12px'>"
+        f"<p style='margin:0 0 4px;font-size:0.78em;color:{color};font-weight:600;letter-spacing:.05em'>"
+        f"🏆 RESULTADO · {ctx['periodo']} · {ctx['vuelta']}</p>"
+        f"<p style='margin:0 0 6px;font-weight:600;font-size:0.97em'>{ctx['resultado']}</p>"
+        f"<p style='margin:0;font-size:0.83em;color:#555'>"
+        f"📅 Debate clave: {ctx['debate_clave']}</p>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    with st.expander("📖 Contexto electoral completo"):
+        st.markdown(ctx["narrativa"])
+
+# ── WORDCLOUD ──────────────────────────────────────────────────────────────────
 STOPWORDS_ES = {
     "de","la","el","en","y","a","los","del","se","las","por","un","para",
     "con","una","su","al","lo","como","más","pero","sus","le","ya","o",
@@ -126,7 +274,7 @@ STOPWORDS_ES = {
     "hoy","ayer","así","bien","gran","cada","hacer","puede","nuestro",
     "nuestra","nuestros","nuestras","está","están","tener","solo","todos",
     "todas","otro","otra","años","Chile","Bolivia","Ecuador","país",
-    "gobierno","presidente","presidenta","hemos","sido","ser","esto",
+    "gobierno","presidente","presidenta","hemos","sido","esto",
 }
 
 @st.cache_data
@@ -156,18 +304,75 @@ def generar_wordcloud(candidato: str, color: str) -> BytesIO:
     buf.seek(0)
     return buf
 
+# ── GRÁFICO TEMPORAL CON HITOS ─────────────────────────────────────────────────
+def render_timeline_hitos(pais: str, data: pd.DataFrame):
+    """Línea de likes semanales por candidato con líneas verticales en hitos electorales."""
+    semanal = (
+        data.groupby(["semana", "candidato_nombre"])
+        .agg(likes=("like_count","sum"), tweets=("tweet_id","count"))
+        .reset_index()
+    )
+
+    metrica = st.radio(
+        "Ver por:",
+        ["likes", "tweets"],
+        format_func=lambda x: {"likes": "Likes", "tweets": "Volumen de tweets"}[x],
+        horizontal=True,
+        key=f"timeline_metric_{pais}",
+    )
+
+    fig = px.line(
+        semanal, x="semana", y=metrica,
+        color="candidato_nombre",
+        color_discrete_map=COLORES_CANDIDATO,
+        markers=True,
+        labels={
+            "semana": "",
+            metrica: "Likes semanales" if metrica == "likes" else "Tweets semanales",
+            "candidato_nombre": "",
+        },
+    )
+    fig.update_layout(
+        height=400,
+        legend=dict(orientation="h", y=-0.18),
+        margin=dict(t=20, b=60),
+        hovermode="x unified",
+    )
+
+    # Añadir líneas verticales en hitos electorales
+    hitos_pais = HITOS.get(pais, [])
+    for h in hitos_pais:
+        fig.add_vline(
+            x=h["fecha"],
+            line_dash="dash",
+            line_color="rgba(0,0,0,0.25)",
+            line_width=1.5,
+        )
+        fig.add_annotation(
+            x=h["fecha"],
+            y=1,
+            yref="paper",
+            text=h["label"],
+            showarrow=False,
+            font=dict(size=10, color="#555"),
+            textangle=-55,
+            xanchor="left",
+            yanchor="top",
+        )
+
+    st.plotly_chart(fig, use_container_width=True)
+    nota(
+        "Las líneas verticales marcan hitos electorales clave: debates y fechas de votación. "
+        "Observa si los picos de engagement coinciden con estos momentos o si la conversación "
+        "se anticipa o retrasa respecto a los eventos."
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN: ¿QUÉ DICE LA GENTE?
 # ══════════════════════════════════════════════════════════════════════════════
 def render_opinion(pais: str):
-    """
-    Sección independiente — no compara con datos propios del candidato.
-    Son muestras, útiles para patrones temáticos y textos, no para volúmenes absolutos.
-    """
     if not HAY_OPINION:
         return
-
     col_nombre = "candidato_nombre" if "candidato_nombre" in df_op.columns else "candidato"
     data_op = df_op[df_op["candidato_pais"] == pais].copy()
     if data_op.empty:
@@ -182,29 +387,20 @@ def render_opinion(pais: str):
     )
 
     candidatos_op = sorted(data_op[col_nombre].unique().tolist())
-    candidato_sel = st.selectbox(
-        "Ver conversación sobre:", candidatos_op, key=f"op_{pais}"
-    )
+    candidato_sel = st.selectbox("Ver conversación sobre:", candidatos_op, key=f"op_{pais}")
     d     = data_op[data_op[col_nombre] == candidato_sel]
     color = COLORES_CANDIDATO.get(candidato_sel, COLORES_PAIS[pais])
 
-    # ── KPIs de la muestra ─────────────────────────────────────────────────
     col_autor = "autor_username" if "autor_username" in d.columns else "author_username"
     c1, c2, c3 = st.columns(3)
     c1.metric("Tweets en la muestra",  fmt(len(d)))
     c2.metric("Personas distintas",
               fmt(d[col_autor].nunique()) if col_autor in d.columns else "—")
-    c3.metric("Likes acumulados",      fmt(d["like_count"].sum()))
-
+    c3.metric("Likes acumulados", fmt(d["like_count"].sum()))
     nota("Estos números reflejan la muestra capturada, no el universo total de menciones en X.")
 
-    # ── Evolución semanal de la conversación ──────────────────────────────
     st.markdown("**¿Cuándo habló más la gente de este candidato?**")
-    semanal_op = (
-        d.groupby("semana")
-        .agg(tweets=("tweet_id", "count"))
-        .reset_index()
-    )
+    semanal_op = d.groupby("semana").agg(tweets=("tweet_id","count")).reset_index()
     fig_ev = px.area(
         semanal_op, x="semana", y="tweets",
         labels={"semana": "Semana", "tweets": "Tweets capturados"},
@@ -212,20 +408,15 @@ def render_opinion(pais: str):
     )
     fig_ev.update_layout(showlegend=False, height=220, margin=dict(t=10, b=10))
     st.plotly_chart(fig_ev, use_container_width=True)
-    nota(
-        "Los picos indican semanas con mayor conversación ciudadana. "
-        "Pueden coincidir con debates, polémicas o hitos electorales."
-    )
+    nota("Los picos indican semanas con mayor conversación ciudadana. Pueden coincidir con debates o hitos electorales.")
 
-    # ── Hashtags ciudadanos ────────────────────────────────────────────────
     if "hashtags" in d.columns:
         st.markdown("**¿Con qué hashtags habla la gente de este candidato?**")
         ht_op = top_hashtags(d["hashtags"], n=8)
         if not ht_op.empty:
             fig_ht = px.bar(
                 ht_op.sort_values("freq"),
-                x="freq", y="hashtag", orientation="h",
-                text="freq",
+                x="freq", y="hashtag", orientation="h", text="freq",
                 labels={"freq": "Usos", "hashtag": ""},
                 color_discrete_sequence=[color],
             )
@@ -233,11 +424,9 @@ def render_opinion(pais: str):
             fig_ht.update_layout(showlegend=False, height=280, margin=dict(t=10))
             st.plotly_chart(fig_ht, use_container_width=True)
 
-    # ── Tweets ciudadanos más virales ──────────────────────────────────────
     st.markdown("**Tweets ciudadanos con más likes sobre este candidato**")
-    col_rt  = "retweet_count" if "retweet_count" in d.columns else None
-    top_op  = d.sort_values("like_count", ascending=False).head(3).reset_index(drop=True)
-
+    col_rt = "retweet_count" if "retweet_count" in d.columns else None
+    top_op = d.sort_values("like_count", ascending=False).head(3).reset_index(drop=True)
     for _, row in top_op.iterrows():
         with st.container(border=True):
             autor = row.get("autor_username", row.get("author_username", "—"))
@@ -245,10 +434,7 @@ def render_opinion(pais: str):
             ca.markdown(f"**@{autor}** · {str(row['created_at'])[:10]}")
             cb.metric("❤️", fmt(row["like_count"]))
             cc.metric("🔁", fmt(row[col_rt]) if col_rt else "—")
-            st.markdown(
-                f"> {str(row['text'])[:200]}{'…' if len(str(row['text'])) > 200 else ''}"
-            )
-
+            st.markdown(f"> {str(row['text'])[:200]}{'…' if len(str(row['text'])) > 200 else ''}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FUNCIÓN REUTILIZABLE POR PAÍS
@@ -258,7 +444,6 @@ def render_pais(pais: str):
     met  = metricas(data)
     candidatos = met["candidato_nombre"].tolist()
 
-    # ── KPIs ──────────────────────────────────────────────────────────────
     c1, c2, c3 = st.columns(3)
     c1.metric("Tweets propios", fmt(len(data)))
     c2.metric("Likes totales",  fmt(data["like_count"].sum()))
@@ -266,33 +451,27 @@ def render_pais(pais: str):
 
     st.divider()
 
-    # ── Engagement y eficiencia ────────────────────────────────────────────
     st.subheader("Engagement y eficiencia")
-    nota(
-        "Izquierda: impacto bruto acumulado. Derecha: rendimiento promedio por tweet. "
-        "Cuando el ranking difiere, el candidato más activo no es el que mejor conecta."
-    )
+    nota("Izquierda: impacto bruto acumulado. Derecha: rendimiento promedio por tweet. Cuando el ranking difiere, el candidato más activo no es el que mejor conecta.")
     col1, col2 = st.columns(2)
-
     with col1:
         fig_likes = px.bar(
             met.sort_values("likes"),
             x="likes", y="candidato_nombre", orientation="h",
             color="candidato_nombre", color_discrete_map=COLORES_CANDIDATO,
             text="likes", title="Likes totales",
-            labels={"likes": "Likes", "candidato_nombre": ""},
+            labels={"likes":"Likes","candidato_nombre":""},
         )
         fig_likes.update_traces(texttemplate="%{text:,}", textposition="outside")
         fig_likes.update_layout(showlegend=False, height=300)
         st.plotly_chart(fig_likes, use_container_width=True)
-
     with col2:
         fig_lpt = px.bar(
             met.sort_values("likes_x_tweet"),
             x="likes_x_tweet", y="candidato_nombre", orientation="h",
             color="candidato_nombre", color_discrete_map=COLORES_CANDIDATO,
             text="likes_x_tweet", title="Likes por tweet",
-            labels={"likes_x_tweet": "Likes/tweet", "candidato_nombre": ""},
+            labels={"likes_x_tweet":"Likes/tweet","candidato_nombre":""},
         )
         fig_lpt.update_traces(texttemplate="%{text:,}", textposition="outside")
         fig_lpt.update_layout(showlegend=False, height=300)
@@ -300,87 +479,46 @@ def render_pais(pais: str):
 
     st.divider()
 
-    # ── Evolución temporal ─────────────────────────────────────────────────
-    st.subheader("Evolución semanal")
-    nota("Busca picos simultáneos — suelen coincidir con debates o eventos clave del período.")
-
-    semanal = (
-        data.groupby(["semana", "candidato_nombre"])
-        .agg(likes=("like_count","sum"), tweets=("tweet_id","count"))
-        .reset_index()
-    )
-    metrica_temp = st.radio(
-        "Ver por:",
-        ["likes", "tweets"],
-        format_func=lambda x: {"likes": "Likes", "tweets": "Volumen de tweets"}[x],
-        horizontal=True,
-        key=f"temp_{pais}",
-    )
-    fig_temp = px.line(
-        semanal, x="semana", y=metrica_temp,
-        color="candidato_nombre", color_discrete_map=COLORES_CANDIDATO,
-        markers=True,
-        labels={
-            "semana": "Semana",
-            metrica_temp: metrica_temp.capitalize(),
-            "candidato_nombre": "",
-        },
-    )
-    fig_temp.update_layout(legend_title="", height=360)
-    st.plotly_chart(fig_temp, use_container_width=True)
+    st.subheader("Evolución semanal y hitos electorales")
+    nota("Las líneas verticales marcan debates y fechas de votación. ¿Coinciden los picos con los eventos clave?")
+    render_timeline_hitos(pais, data)
 
     st.divider()
 
-    # ── Hashtags ───────────────────────────────────────────────────────────
     st.subheader("Hashtags más usados")
     nota("Revelan los ejes temáticos de campaña y los eventos en que participó activamente.")
-
     candidato_ht = st.selectbox("Ver hashtags de:", candidatos, key=f"ht_{pais}")
-    ht = top_hashtags(
-        data[data["candidato_nombre"] == candidato_ht]["hashtags"], n=10
-    )
+    ht = top_hashtags(data[data["candidato_nombre"] == candidato_ht]["hashtags"], n=10)
     if not ht.empty:
         color_ht = COLORES_CANDIDATO.get(candidato_ht, COLORES_PAIS[pais])
         fig_ht = px.bar(
             ht.sort_values("freq"),
-            x="freq", y="hashtag", orientation="h",
-            text="freq",
-            labels={"freq": "Usos", "hashtag": ""},
+            x="freq", y="hashtag", orientation="h", text="freq",
+            labels={"freq":"Usos","hashtag":""},
             color_discrete_sequence=[color_ht],
         )
         fig_ht.update_traces(textposition="outside")
-        fig_ht.update_layout(showlegend=False, height=max(280, len(ht) * 32))
+        fig_ht.update_layout(showlegend=False, height=max(280, len(ht)*32))
         st.plotly_chart(fig_ht, use_container_width=True)
 
     st.divider()
 
-    # ── Top tweets ─────────────────────────────────────────────────────────
     st.subheader("Tweets más virales")
     nota("El contenido con mayor respuesta — en las propias palabras del candidato.")
-
-    candidato_top = st.selectbox(
-        "Ver tweets de:", ["Todos"] + candidatos, key=f"top_{pais}"
-    )
-    top_data = (
-        data if candidato_top == "Todos"
-        else data[data["candidato_nombre"] == candidato_top]
-    )
+    candidato_top = st.selectbox("Ver tweets de:", ["Todos"] + candidatos, key=f"top_{pais}")
+    top_data = data if candidato_top == "Todos" else data[data["candidato_nombre"] == candidato_top]
     top5 = top_data.sort_values("like_count", ascending=False).head(5).reset_index(drop=True)
-
     for _, row in top5.iterrows():
         with st.container(border=True):
-            ca, cb, cc, cd = st.columns([3, 1, 1, 1])
+            ca, cb, cc, cd = st.columns([3,1,1,1])
             ca.markdown(f"**{row['candidato_nombre']}** · {str(row['created_at'])[:10]}")
             cb.metric("❤️", fmt(row["like_count"]))
             cc.metric("🔁", fmt(row["retweet_count"]))
             cd.metric("👁️", fmt(row["view_count"]))
-            st.markdown(
-                f"> {str(row['text'])[:220]}{'…' if len(str(row['text'])) > 220 else ''}"
-            )
-            if pd.notna(row.get("tweet_url", "")):
+            st.markdown(f"> {str(row['text'])[:220]}{'…' if len(str(row['text']))>220 else ''}")
+            if pd.notna(row.get("tweet_url","")):
                 st.markdown(f"[Ver en X ↗]({row['tweet_url']})")
 
-    # ── OPINIÓN CIUDADANA ─────────────────────────────────────────────────
     render_opinion(pais)
 
 
@@ -390,127 +528,8 @@ def render_pais(pais: str):
 st.title("🗳️ Observatorio LATAM 2025")
 
 tab_general, tab_chile, tab_bolivia, tab_ecuador = st.tabs([
-    "🌎 General",
-    "🇨🇱 Chile",
-    "🇧🇴 Bolivia",
-    "🇪🇨 Ecuador",
+    "🌎 General", "🇨🇱 Chile", "🇧🇴 Bolivia", "🇪🇨 Ecuador",
 ])
-
-
-# ── HELPERS GLOBALES: foto y seguidores desde perfiles CSV ─────────────────────
-# Detectar columna de foto
-_foto_col = None
-if HAY_PERFILES:
-    for _c in ["foto_perfil_url", "profilePicture", "profile_image_url"]:
-        if _c in df_perf.columns:
-            _foto_col = _c
-            break
-
-# Detectar columna de id y seguidores
-_id_col  = "nombre_real" if HAY_PERFILES and "nombre_real" in df_perf.columns else "username"
-_seg_col = None
-if HAY_PERFILES:
-    for _c in ["seguidores", "followers", "seguidores_snapshot_hoy"]:
-        if _c in df_perf.columns:
-            _seg_col = _c
-            break
-
-def get_foto(nombre):
-    if not HAY_PERFILES or _foto_col is None:
-        return None
-    fila = df_perf[df_perf[_id_col] == nombre]
-    if fila.empty:
-        return None
-    url = fila.iloc[0][_foto_col]
-    return str(url) if pd.notna(url) else None
-
-def get_seguidores(nombre):
-    if not HAY_PERFILES or _seg_col is None:
-        return None
-    fila = df_perf[df_perf[_id_col] == nombre]
-    if fila.empty:
-        return None
-    val = fila.iloc[0][_seg_col]
-    return int(val) if pd.notna(val) else None
-
-# ── CONTEXTO ELECTORAL (texto narrativo) ──────────────────────────────────────
-CONTEXTO = {
-    "Ecuador": {
-        "ganador":  "Daniel Noboa",
-        "resultado": "Noboa se impuso con un 55,63% en la segunda vuelta (13 abr 2025).",
-        "narrativa": (
-            "El calendario del CNE estableció el inicio oficial de campaña el **5 de enero de 2025**. "
-            "La primera vuelta se celebró el **9 de febrero** y la segunda vuelta el **13 de abril**. "
-            "El debate presidencial del **23 de marzo** fue el hito central: González interpeló a Noboa "
-            "por incumplimiento de promesas, mientras Noboa posicionó la narrativa del *'Nuevo Ecuador'* "
-            "frente al *'pasado fallido'*. En X, Noboa priorizó hitos de gestión en seguridad y evitó "
-            "la confrontación directa; González utilizó la plataforma para denunciar la falta de un plan "
-            "de seguridad en un contexto de alta violencia."
-        ),
-        "debate_clave": "23 de marzo de 2025 — Debate presidencial 2ª vuelta",
-        "periodo": "5 ene – 13 abr 2025",
-        "vuelta": "2da vuelta",
-        "n_cands": 2,
-    },
-    "Bolivia": {
-        "ganador":  "Rodrigo Paz Pereira",
-        "resultado": "Paz Pereira resultó electo en la segunda vuelta (19 oct 2025), marcando el mayor giro hacia la centroderecha en dos décadas.",
-        "narrativa": (
-            "Bolivia vivió en 2025 el desplome electoral más significativo del MAS en dos décadas. "
-            "La primera vuelta (**17 de agosto**) fragmentó el voto oficialista, permitiendo el pase "
-            "de Paz Pereira y Quiroga al balotaje del **19 de octubre**. "
-            "El debate del **12 de octubre** fue el punto de inflexión: ambos se comprometieron a "
-            "respetar los resultados para garantizar la paz social. Quiroga utilizó X como plataforma "
-            "de denuncia internacional y propuesta técnica; Paz se posicionó como candidato de la "
-            "*'renovación'*. Su moderación en X frente al tono más combativo de Quiroga le habría "
-            "permitido capturar el voto útil de una población agotada por la polarización."
-        ),
-        "debate_clave": "12 de octubre de 2025 — Debate presidencial 2ª vuelta",
-        "periodo": "13 jul – 19 oct 2025",
-        "vuelta": "2da vuelta",
-        "n_cands": 2,
-    },
-    "Chile": {
-        "ganador":  "José Antonio Kast",
-        "resultado": "Kast se impuso con un 58,17% en el balotaje del 14 de diciembre de 2025.",
-        "narrativa": (
-            "Las elecciones de Chile representaron el péndulo político más extremo de su historia reciente. "
-            "La primera vuelta (**16 de noviembre**) dejó fuera a Matthei y Parisi. El balotaje del "
-            "**14 de diciembre** enfrentó a la oficialista Jara contra Kast. "
-            "La campaña tuvo tres debates clave: el **10 de septiembre** en Chilevisión (8 candidatos), "
-            "el **4 de noviembre** en ARCHI y el **10 de noviembre** en ANATEL. "
-            "En X, Kast lideró el engagement con narrativas de orden y seguridad; Matthei buscó "
-            "proyectar gobernabilidad institucional, aunque un pacto de no agresión en la derecha "
-            "terminó favoreciendo a Kast; Jara defendió las reformas sociales del gobierno pero fue "
-            "interpelada constantemente por la continuidad del programa oficialista."
-        ),
-        "debate_clave": "10 nov 2025 — Debate ANATEL (último antes de 1ª vuelta)",
-        "periodo": "17 sept – 14 dic 2025",
-        "vuelta": "1ra y 2da vuelta",
-        "n_cands": 5,
-    },
-}
-
-def render_contexto_pais(pais):
-    """Banner narrativo con el contexto electoral del país."""
-    ctx = CONTEXTO.get(pais, {})
-    if not ctx:
-        return
-    color = COLORES_PAIS[pais]
-    st.markdown(
-        f"<div style='background:{color}12;border-left:4px solid {color};"
-        f"padding:12px 16px;border-radius:6px;margin-bottom:16px'>"
-        f"<p style='margin:0 0 4px;font-size:0.8em;color:{color};font-weight:600;'>"
-        f"🏆 RESULTADO · {ctx['periodo']} · {ctx['vuelta']}</p>"
-        f"<p style='margin:0 0 6px;font-weight:600;font-size:1em'>{ctx['resultado']}</p>"
-        f"<p style='margin:0;font-size:0.85em;color:#444;'>"
-        f"📅 Debate clave: {ctx['debate_clave']}</p>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-    with st.expander("📖 Contexto electoral completo"):
-        st.markdown(ctx["narrativa"])
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB GENERAL
@@ -522,7 +541,6 @@ with tab_general:
         "Chile, Bolivia y Ecuador durante sus respectivos períodos electorales de 2025."
     )
 
-    # ── KPIs globales ──────────────────────────────────────────────────────
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Países",         3)
     c2.metric("Candidatos",     df["candidato_nombre"].nunique())
@@ -533,57 +551,40 @@ with tab_general:
 
     st.divider()
 
-    # ── Tarjetas de candidatos con selector de país ────────────────────────
+    # ── Tarjetas de candidatos ─────────────────────────────────────────────
     st.subheader("Los candidatos")
 
-    # Métricas base
     met_cands = metricas(df_prop).merge(
         df_prop[["candidato_nombre","candidato_pais","candidato_vuelta","periodo_busqueda"]]
         .drop_duplicates("candidato_nombre"),
         on="candidato_nombre", how="left"
     )
 
-    # Selector de país — botones con st.pills (Streamlit ≥1.43) o radio fallback
+    # Selector de país con pills (fallback a radio si versión antigua)
     opciones_pais = ["🇨🇱  Chile", "🇧🇴  Bolivia", "🇪🇨  Ecuador"]
-    mapa_pais     = {"🇨🇱  Chile": "Chile", "🇧🇴  Bolivia": "Bolivia", "🇪🇨  Ecuador": "Ecuador"}
-
+    mapa_pais     = {"🇨🇱  Chile":"Chile", "🇧🇴  Bolivia":"Bolivia", "🇪🇨  Ecuador":"Ecuador"}
     try:
-        pais_btn = st.pills(
-            "Selecciona un país:",
-            opciones_pais,
-            default="🇨🇱  Chile",
-            key="pills_pais",
-        )
-        pais_sel = mapa_pais.get(pais_btn, "Chile")
+        sel = st.pills("Selecciona un país:", opciones_pais, default="🇨🇱  Chile", key="pills_pais")
+        pais_sel = mapa_pais.get(sel, "Chile")
     except AttributeError:
-        # Fallback para versiones anteriores de Streamlit
-        opcion = st.radio(
-            "Selecciona un país:",
-            opciones_pais,
-            horizontal=True,
-            key="radio_pais_home",
-        )
-        pais_sel = mapa_pais.get(opcion, "Chile")
+        sel = st.radio("Selecciona un país:", opciones_pais, horizontal=True, key="radio_pais")
+        pais_sel = mapa_pais.get(sel, "Chile")
 
     color_pais = COLORES_PAIS[pais_sel]
-
-    # Banner de contexto electoral
     render_contexto_pais(pais_sel)
 
     # Tarjetas
-    cands_pais = met_cands[met_cands["candidato_pais"] == pais_sel].sort_values(
-        "likes", ascending=False
-    )
+    cands_pais = met_cands[met_cands["candidato_pais"] == pais_sel].sort_values("likes", ascending=False)
     cols_cands = st.columns(len(cands_pais))
     for col, (_, row) in zip(cols_cands, cands_pais.iterrows()):
         nombre     = row["candidato_nombre"]
         foto       = get_foto(nombre)
         seguidores = get_seguidores(nombre)
-
         with col:
             with st.container(border=True):
+                # Usar st.image con URL directa — única forma que funciona en Streamlit
                 if foto:
-                    st.image(foto, width=90)
+                    st.image(foto, use_container_width=True)
                 st.markdown(f"**{nombre}**")
                 st.caption(row["candidato_vuelta"])
                 st.divider()
@@ -597,6 +598,17 @@ with tab_general:
 
     st.divider()
 
+    # ── Timeline con hitos — filtrado por país seleccionado ────────────────
+    st.subheader("Evolución semanal y hitos electorales")
+    nota(
+        "Likes semanales de cada candidato. Las líneas verticales marcan debates y votaciones. "
+        "Cambia de país arriba para ver el contexto de cada elección."
+    )
+    data_pais_sel = df_prop[df_prop["candidato_pais"] == pais_sel].copy()
+    render_timeline_hitos(pais_sel, data_pais_sel)
+
+    st.divider()
+
     # ── Volumen vs eficiencia ──────────────────────────────────────────────
     st.subheader("Volumen vs eficiencia")
     nota(
@@ -606,20 +618,11 @@ with tab_general:
     )
     fig_burbuja = px.scatter(
         met_cands,
-        x="tweets", y="likes_x_tweet",
-        size="views", color="candidato_pais",
-        color_discrete_map=COLORES_PAIS,
-        symbol="candidato_pais",
-        hover_name="candidato_nombre",
-        hover_data={
-            "candidato_pais": True, "tweets": True,
-            "likes_x_tweet": True, "views": False,
-        },
-        labels={
-            "tweets": "N° tweets",
-            "likes_x_tweet": "Likes promedio por tweet",
-            "candidato_pais": "País",
-        },
+        x="tweets", y="likes_x_tweet", size="views",
+        color="candidato_pais", color_discrete_map=COLORES_PAIS,
+        symbol="candidato_pais", hover_name="candidato_nombre",
+        hover_data={"candidato_pais":True,"tweets":True,"likes_x_tweet":True,"views":False},
+        labels={"tweets":"N° tweets","likes_x_tweet":"Likes promedio por tweet","candidato_pais":"País"},
         size_max=55,
     )
     fig_burbuja.update_layout(height=420, legend_title="País")
@@ -630,10 +633,9 @@ with tab_general:
     # ── Tabla de contexto ──────────────────────────────────────────────────
     st.subheader("Tabla de contexto")
     nota("Período analizado, vuelta electoral y métricas clave de cada candidato.")
-
     tabla = met_cands[["candidato_pais","candidato_nombre","candidato_vuelta",
                         "periodo_busqueda","tweets","likes","views","likes_x_tweet"]].copy()
-    tabla = tabla.sort_values(["candidato_pais","likes"], ascending=[True, False])
+    tabla = tabla.sort_values(["candidato_pais","likes"], ascending=[True,False])
     tabla.columns = ["País","Candidato","Vuelta","Período","Tweets","Likes","Views","Likes/tweet"]
     for c in ["Likes","Views"]:
         tabla[c] = tabla[c].apply(lambda x: f"{int(x):,}")
@@ -649,13 +651,13 @@ with tab_general:
         with col_v1:
             foto_viral = get_foto(viral["candidato_nombre"])
             if foto_viral:
-                st.image(foto_viral, width=48)
+                st.image(foto_viral, width=52)
             st.markdown(
                 f"**{viral['candidato_nombre']}** · {viral['candidato_pais']} · "
                 f"{str(viral['created_at'])[:10]}"
             )
             st.markdown(f"> {str(viral['text'])[:300]}")
-            if pd.notna(viral.get("tweet_url", "")):
+            if pd.notna(viral.get("tweet_url","")):
                 st.markdown(f"[Ver en X ↗]({viral['tweet_url']})")
         with col_v2:
             st.metric("❤️ Likes",  fmt(viral["like_count"]))
@@ -666,10 +668,7 @@ with tab_general:
 
     # ── Wordcloud ──────────────────────────────────────────────────────────
     st.subheader("¿De qué habla cada candidato?")
-    nota(
-        "Términos más frecuentes en los tweets propios. "
-        "Tamaño proporcional a la frecuencia. Stopwords, URLs y menciones eliminados."
-    )
+    nota("Términos más frecuentes en los tweets propios. Tamaño proporcional a la frecuencia.")
     candidatos_lista = sorted(df_prop["candidato_nombre"].unique().tolist())
     wc_cand  = st.selectbox("Selecciona un candidato:", candidatos_lista, key="wc_home")
     color_wc = COLORES_CANDIDATO.get(wc_cand, "#1F77B4")
@@ -680,7 +679,7 @@ with tab_general:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TABS PAÍS — con contexto electoral al inicio
+# TABS PAÍS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_chile:
     st.subheader("🇨🇱 Chile — Elecciones presidenciales 2025")
