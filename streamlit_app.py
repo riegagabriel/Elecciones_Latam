@@ -584,7 +584,7 @@ with tab_general:
             with st.container(border=True):
                 # Usar st.image con URL directa — única forma que funciona en Streamlit
                 if foto:
-                    st.image(foto, use_container_width=True)
+                    st.image(foto, width=80)
                 st.markdown(f"**{nombre}**")
                 st.caption(row["candidato_vuelta"])
                 st.divider()
