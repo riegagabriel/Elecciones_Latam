@@ -71,7 +71,7 @@ def load_opinion():
 
 @st.cache_data
 def load_perfiles():
-    # Busca cualquier archivo perfiles_20260328_204225.csv en /data
+    # Busca cualquier archivo perfiles_*.csv en /data
     archivos = glob.glob("data/perfiles_*.csv")
     if not archivos:
         return pd.DataFrame()
@@ -417,19 +417,15 @@ with tab_general:
 
     # ── Tarjetas de candidatos con foto ───────────────────────────────────
     st.subheader("Los candidatos")
-    nota(
-        "Foto de perfil oficial de Twitter/X · "
-        "Datos capturados durante el período electoral de cada candidato."
-    )
 
-    # Preparar métricas por candidato
+    # Preparar métricas por candidato (reutilizado más abajo)
     met_cands = metricas(df_prop).merge(
         df_prop[["candidato_nombre","candidato_pais","candidato_vuelta","periodo_busqueda"]]
         .drop_duplicates("candidato_nombre"),
         on="candidato_nombre", how="left"
     )
 
-    # Foto de perfil desde perfiles CSV (columna foto_perfil_url)
+    # Columna de foto de perfil
     foto_col = None
     if HAY_PERFILES:
         for c in ["foto_perfil_url","profilePicture","profile_image_url"]:
@@ -440,40 +436,103 @@ with tab_general:
     def get_foto(nombre):
         if not HAY_PERFILES or foto_col is None:
             return None
-        row = df_perf[df_perf["nombre_real"] == nombre] if "nombre_real" in df_perf.columns \
-              else df_perf[df_perf["username"] == nombre]
+        col_id = "nombre_real" if "nombre_real" in df_perf.columns else "username"
+        row = df_perf[df_perf[col_id] == nombre]
         if row.empty:
             return None
         url = row.iloc[0][foto_col]
         return url if pd.notna(url) else None
 
-    # Agrupar por país
-    for pais in ["Chile", "Bolivia", "Ecuador"]:
-        cands_pais = met_cands[met_cands["candidato_pais"] == pais].sort_values(
-            "likes", ascending=False
-        )
-        st.markdown(
-            f"<p style='font-weight:600;font-size:1em;color:{COLORES_PAIS[pais]};"
-            f"margin-bottom:6px;margin-top:8px'>{pais}</p>",
-            unsafe_allow_html=True,
-        )
-        cols = st.columns(len(cands_pais))
-        for col, (_, row) in zip(cols, cands_pais.iterrows()):
-            with col:
-                foto = get_foto(row["candidato_nombre"])
+    def get_seguidores(nombre):
+        if not HAY_PERFILES:
+            return None
+        col_id  = "nombre_real" if "nombre_real" in df_perf.columns else "username"
+        col_seg = next((c for c in ["seguidores","followers","seguidores_snapshot_hoy"]
+                        if c in df_perf.columns), None)
+        if col_seg is None:
+            return None
+        row = df_perf[df_perf[col_id] == nombre]
+        if row.empty:
+            return None
+        val = row.iloc[0][col_seg]
+        return int(val) if pd.notna(val) else None
+
+    # Selector de bandera
+    BANDERAS = {"🇨🇱 Chile": "Chile", "🇧🇴 Bolivia": "Bolivia", "🇪🇨 Ecuador": "Ecuador"}
+    bandera_sel = st.radio(
+        "Selecciona un país para ver sus candidatos:",
+        list(BANDERAS.keys()),
+        horizontal=True,
+        key="bandera_home",
+        label_visibility="visible",
+    )
+    pais_sel = BANDERAS[bandera_sel]
+    color_pais = COLORES_PAIS[pais_sel]
+
+    # Contexto del país
+    INFO_PAIS = {
+        "Chile":   ("17 sept – 14 dic 2025", "1ra y 2da vuelta", 5),
+        "Bolivia": ("13 jul – 19 oct 2025",  "2da vuelta",       2),
+        "Ecuador": ("5 ene – 13 abr 2025",   "2da vuelta",       2),
+    }
+    periodo, vuelta, n_cands = INFO_PAIS[pais_sel]
+    st.markdown(
+        f"<div style='background:{color_pais}18;border-left:4px solid {color_pais};"
+        f"padding:8px 14px;border-radius:4px;margin-bottom:16px;"
+        f"font-size:0.9em;color:#333'>"
+        f"📅 <b>{periodo}</b> · {vuelta} · {n_cands} candidatos analizados"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Tarjetas de candidatos del país seleccionado
+    cands_pais = met_cands[met_cands["candidato_pais"] == pais_sel].sort_values(
+        "likes", ascending=False
+    )
+    cols_cands = st.columns(len(cands_pais))
+    for col, (_, row) in zip(cols_cands, cands_pais.iterrows()):
+        nombre    = row["candidato_nombre"]
+        foto      = get_foto(nombre)
+        seguidores = get_seguidores(nombre)
+        color_c   = COLORES_CANDIDATO.get(nombre, color_pais)
+
+        with col:
+            with st.container(border=True):
+                # Foto de perfil centrada
                 if foto:
-                    st.image(foto, width=72)
+                    st.markdown(
+                        f"<div style='text-align:center'>"
+                        f"<img src='{foto}' style='width:80px;height:80px;"
+                        f"border-radius:50%;object-fit:cover;"
+                        f"border:3px solid {color_c}'>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                # Nombre
                 st.markdown(
-                    f"**{row['candidato_nombre']}**  \n"
-                    f"<span style='font-size:0.8em;color:#666'>"
-                    f"{row['candidato_vuelta']}</span>",
+                    f"<p style='text-align:center;font-weight:600;font-size:0.9em;"
+                    f"margin:8px 0 2px;line-height:1.3'>{nombre}</p>",
                     unsafe_allow_html=True,
                 )
+                # Vuelta
                 st.markdown(
-                    f"❤️ **{fmt(row['likes'])}** likes  \n"
-                    f"📄 {fmt(row['tweets'])} tweets  \n"
-                    f"⚡ {fmt(row['likes_x_tweet'])} likes/tweet"
+                    f"<p style='text-align:center;font-size:0.75em;color:#888;"
+                    f"margin:0 0 8px'>{row['candidato_vuelta']}</p>",
+                    unsafe_allow_html=True,
                 )
+                st.divider()
+                # Métricas
+                m1, m2 = st.columns(2)
+                m1.metric("❤️ Likes",    fmt(row["likes"]))
+                m2.metric("📄 Tweets",   fmt(row["tweets"]))
+                m1.metric("⚡ /tweet",   fmt(row["likes_x_tweet"]))
+                m2.metric("👁️ Views",   fmt(row["views"]))
+                if seguidores:
+                    st.markdown(
+                        f"<p style='text-align:center;font-size:0.78em;color:#888;"
+                        f"margin-top:4px'>👥 {fmt(seguidores)} seguidores</p>",
+                        unsafe_allow_html=True,
+                    )
 
     st.divider()
 
