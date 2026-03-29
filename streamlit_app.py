@@ -1,9 +1,14 @@
 # app.py
 # Ejecutar con: streamlit run app.py
+#
+# Archivos de datos requeridos en /data:
+#   tweets_consolidado_20260328_204225.csv      ← tweets propios de candidatos
+#   opinion_consolidado_20260329_172545.csv     ← tweets ciudadanos sobre candidatos
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from collections import Counter
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
@@ -45,6 +50,11 @@ los niveles de base de seguidores difieren ampliamente entre países, y el uso d
 estructuralmente entre Chile, Bolivia y Ecuador. Comparar candidatos entre países introduciría
 sesgos difíciles de controlar. El único análisis multi-país es el gráfico de **Volumen vs Eficiencia**,
 que normaliza por tweet y permite una lectura comparada sin esos sesgos.
+
+**Sobre los datos de opinión ciudadana:** Los tweets de ciudadanos se capturaron con 
+4 estrategias de búsqueda (menciones directas, hashtags de campaña, búsqueda por nombre 
+y opinión contextualizada), excluyendo siempre los tweets propios del candidato. 
+El volumen es una muestra representativa, no exhaustiva.
 """
 
 # ── CARGA ─────────────────────────────────────────────────────────────────────
@@ -63,8 +73,23 @@ def load_data():
         "Original", axis=1)
     return df
 
+@st.cache_data
+def load_opinion():
+    try:
+        df_op = pd.read_csv("data/opinion_consolidado_20260329_172545.csv")
+        df_op["created_at"] = pd.to_datetime(df_op["created_at"], utc=True, errors="coerce")
+        df_op["semana"] = (df_op["created_at"]
+                           .dt.to_period("W")
+                           .dt.start_time
+                           .dt.tz_localize(None))
+        return df_op
+    except FileNotFoundError:
+        return pd.DataFrame()
+
 df      = load_data()
 df_prop = df[~df["is_retweet"]].copy()
+df_op   = load_opinion()
+HAY_OPINION = not df_op.empty
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def fmt(n):
@@ -99,13 +124,11 @@ def insight_box(texto):
     st.info(f"📌 {texto}")
 
 def seccion(titulo, descripcion):
-    """Encabezado de sección con título y descripción interpretativa."""
     st.subheader(titulo)
     st.markdown(f"<p style='color:#666;font-size:0.95em;margin-top:-8px'>{descripcion}</p>",
                 unsafe_allow_html=True)
 
 def nota_lectura(texto):
-    """Nota de lectura destacada bajo un gráfico."""
     st.markdown(
         f"<div style='background:#f0f2f6;border-left:3px solid #4a90d9;"
         f"padding:8px 12px;border-radius:4px;font-size:0.88em;color:#444;"
@@ -113,262 +136,386 @@ def nota_lectura(texto):
         unsafe_allow_html=True,
     )
 
-# ── TABS PRINCIPALES ──────────────────────────────────────────────────────────
-tab_general, tab_chile, tab_bolivia, tab_ecuador, tab_candidato = st.tabs([
-    "🌎 Vista general",
-    "🇨🇱 Chile",
-    "🇧🇴 Bolivia",
-    "🇪🇨 Ecuador",
-    "🧠 Perfil de candidato",
-])
+# ── SCORECARD DE OPINIÓN CIUDADANA ────────────────────────────────────────────
+def render_scorecard_opinion(candidato: str, color: str):
+    """
+    Bloque de storytelling: voz del candidato → eco ciudadano.
+    Incluye scorecard comparativo + gráficos espejo de hashtags + evolución cruzada.
+    """
+    if not HAY_OPINION:
+        st.warning("Archivo de opinión ciudadana no encontrado en /data/")
+        return
 
+    # ── Datos del candidato (voz propia) ─────────────────────────────────
+    d_cand = df_prop[df_prop["candidato_nombre"] == candidato].copy()
+    # ── Datos ciudadanos (eco) ────────────────────────────────────────────
+    # La columna puede llamarse candidato_nombre o candidato
+    col_cand = "candidato_nombre" if "candidato_nombre" in df_op.columns else "candidato"
+    d_op = df_op[df_op[col_cand] == candidato].copy()
 
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 1 · VISTA GENERAL
-# ════════════════════════════════════════════════════════════════════════════
-with tab_general:
-    st.title("🗳️ Observatorio de Comunicación Política · LATAM 2025")
-    st.markdown("""
-    Este observatorio analiza la actividad en **Twitter/X** de los principales candidatos
-    presidenciales de Chile, Bolivia y Ecuador durante sus respectivos períodos electorales de 2025.
-    El objetivo es describir patrones de comunicación digital: ¿quién publica más?, ¿quién genera
-    más impacto?, ¿de qué temas habla cada candidato?
-    """)
-    st.markdown(NOTA_METODOLOGICA)
+    if d_cand.empty:
+        st.warning(f"Sin datos propios para {candidato}")
+        return
+
+    # ── Métricas base ─────────────────────────────────────────────────────
+    tweets_propios   = len(d_cand)
+    likes_propios    = int(d_cand["like_count"].sum())
+    views_propios    = int(d_cand["view_count"].sum())
+    rts_propios      = int(d_cand["retweet_count"].sum())
+
+    tweets_ciudadanos = len(d_op)
+    likes_ciudadanos  = int(d_op["like_count"].sum()) if not d_op.empty else 0
+    views_ciudadanos  = int(d_op["view_count"].sum()) if not d_op.empty else 0
+    autores_unicos    = int(d_op["autor_username"].nunique()) if not d_op.empty and "autor_username" in d_op.columns else 0
+
+    # Ratio de resonancia (eco / voz propia)
+    ratio_tweets = round(tweets_ciudadanos / max(tweets_propios, 1), 1)
+    ratio_likes  = round(likes_ciudadanos  / max(likes_propios,  1), 1)
+
+    # ── SEPARADOR Y TÍTULO DE SECCIÓN ─────────────────────────────────────
     st.divider()
-
-    # ── KPIs ──────────────────────────────────────────────────────────────
-    seccion(
-        "Totales capturados",
-        "Resumen agregado de toda la base de datos. Incluye solo tweets propios "
-        "(se excluyen retweets) para reflejar la producción original de cada candidato."
+    st.markdown(
+        """
+        <div style='display:flex;align-items:center;gap:10px;margin-bottom:4px'>
+          <span style='font-size:1.4em'>🗣️</span>
+          <h3 style='margin:0'>Y esto es lo que dice la gente</h3>
+        </div>
+        <p style='color:#666;font-size:0.95em;margin-top:0;margin-bottom:20px'>
+        Análisis de los tweets de ciudadanos que mencionan, etiquetan o comentan
+        sobre este candidato durante el mismo período electoral. Contrasta con su
+        comunicación propia para revelar brechas entre el mensaje que emite y
+        la conversación que genera.
+        </p>
+        """,
+        unsafe_allow_html=True,
     )
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Tweets propios",  fmt(len(df_prop)))
-    c2.metric("Likes",           fmt(df_prop["like_count"].sum()))
-    c3.metric("Views",           fmt(df_prop["view_count"].sum()))
-    c4.metric("Retweets",        fmt(df_prop["retweet_count"].sum()))
-    c5.metric("Candidatos",      df["candidato_nombre"].nunique())
 
-    st.divider()
+    # ── SCORECARD COMPARATIVO ─────────────────────────────────────────────
+    # Estilo de tarjetas con indicador de dirección
+    def delta_label(ratio):
+        if ratio >= 2.0:  return "🔥 Alto eco"
+        if ratio >= 1.0:  return "📢 Eco moderado"
+        if ratio >= 0.5:  return "📉 Eco bajo"
+        return "🔇 Eco muy bajo"
 
-    # ── Insights ──────────────────────────────────────────────────────────
-    met_global = metricas_candidatos(df_prop)
-    top_ef  = met_global.sort_values("likes_x_tweet", ascending=False).iloc[0]
-    top_vol = met_global.sort_values("tweets",         ascending=False).iloc[0]
-    top_vw  = met_global.sort_values("views",          ascending=False).iloc[0]
+    def delta_color(ratio):
+        if ratio >= 2.0:  return "#2CA02C"
+        if ratio >= 1.0:  return "#FF7F0E"
+        if ratio >= 0.5:  return "#B22222"
+        return "#888888"
 
-    seccion(
-        "📌 Claves del período",
-        "Tres hallazgos destacados calculados automáticamente a partir de los datos. "
-        "Son un punto de entrada para orientar la lectura del resto del dashboard."
-    )
-    col_i1, col_i2, col_i3 = st.columns(3)
-    with col_i1:
-        insight_box(
-            f"**Mayor eficiencia:** {top_ef['candidato_nombre']} "
-            f"({fmt(top_ef['likes_x_tweet'])} likes/tweet)"
+    st.markdown("#### 📊 Scorecard: voz propia vs eco ciudadano")
+
+    # Fila 1: métricas de volumen
+    cols = st.columns(4)
+    with cols[0]:
+        st.metric(
+            label="Tweets publicados (candidato)",
+            value=fmt(tweets_propios),
+            help="Tweets originales del candidato durante el período"
         )
-    with col_i2:
-        insight_box(
-            f"**Mayor volumen:** {top_vol['candidato_nombre']} "
-            f"({fmt(top_vol['tweets'])} tweets capturados)"
+    with cols[1]:
+        st.metric(
+            label="Tweets sobre él (ciudadanos)",
+            value=fmt(tweets_ciudadanos),
+            delta=f"ratio {ratio_tweets}x",
+            help="Tweets de otros usuarios que mencionan, etiquetan o hablan del candidato"
         )
-    with col_i3:
-        insight_box(
-            f"**Mayor alcance:** {top_vw['candidato_nombre']} "
-            f"({fmt(top_vw['views'])} views totales)"
+    with cols[2]:
+        st.metric(
+            label="Autores únicos",
+            value=fmt(autores_unicos),
+            help="Cantidad de personas distintas que tuitearon sobre el candidato"
+        )
+    with cols[3]:
+        # Tarjeta de resonancia con color semántico
+        resonancia = delta_label(ratio_tweets)
+        st.markdown(
+            f"""
+            <div style='background:#f8f9fa;border-radius:8px;padding:14px 16px;
+                        border-left:4px solid {delta_color(ratio_tweets)}'>
+                <div style='font-size:0.78em;color:#666;margin-bottom:4px'>Resonancia de volumen</div>
+                <div style='font-size:1.3em;font-weight:600;color:{delta_color(ratio_tweets)}'>{resonancia}</div>
+                <div style='font-size:0.8em;color:#888;margin-top:2px'>
+                    Por cada tweet propio, {ratio_tweets} tweets ciudadanos
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-    st.divider()
+    st.markdown("<div style='margin:12px 0'></div>", unsafe_allow_html=True)
 
-    # ── Wordcloud ─────────────────────────────────────────────────────────
-    seccion(
-        "¿De qué habla cada candidato?",
-        "La nube de palabras muestra los términos más frecuentes en los tweets propios "
-        "de cada candidato. El tamaño de cada palabra es proporcional a su frecuencia: "
-        "palabras más grandes aparecen más veces. Se han eliminado stopwords (palabras "
-        "vacías como artículos y preposiciones), URLs, menciones y el propio nombre del "
-        "candidato para revelar los temas sustantivos de su comunicación."
-    )
-
-    candidatos_lista = sorted(df_prop["candidato_nombre"].unique().tolist())
-    cand_wc = st.selectbox(
-        "Selecciona un candidato",
-        candidatos_lista,
-        key="wc_candidato",
-    )
-
-    STOPWORDS_ES = {
-        "de","la","el","en","y","a","los","del","se","las","por","un","para",
-        "con","una","su","al","lo","como","más","pero","sus","le","ya","o",
-        "este","sí","porque","esta","entre","cuando","muy","sin","sobre",
-        "también","me","hasta","hay","donde","han","yo","él","ella","nos",
-        "todo","esta","estos","estas","fue","son","ser","tiene","tenemos",
-        "que","es","no","si","te","mi","tu","http","https","t","co","amp",
-        "rt","via","hoy","ayer","así","bien","gran","cada","hacer","puede",
-        "nuestro","nuestra","nuestros","nuestras","está","están","tiene",
-        "tener","solo","todos","todas","otro","otra","años","Chile","Bolivia",
-        "Ecuador","país","gobierno","presidente","presidenta",
-    }
-
-    @st.cache_data
-    def generar_wordcloud(candidato: str, color: str) -> BytesIO:
-        textos = df_prop[df_prop["candidato_nombre"] == candidato]["text"].dropna()
-        def limpiar(texto):
-            texto = re.sub(r"http\S+", "", texto)
-            texto = re.sub(r"@\w+", "", texto)
-            texto = re.sub(r"#(\w+)", r"\1", texto)
-            texto = re.sub(r"[^\w\sáéíóúüñÁÉÍÓÚÜÑ]", " ", texto)
-            return texto.lower()
-        corpus = " ".join(limpiar(t) for t in textos)
-        wc = WordCloud(
-            width=900, height=420,
-            background_color="white",
-            color_func=lambda *args, **kwargs: color,
-            stopwords=STOPWORDS_ES,
-            min_word_length=4,
-            max_words=80,
-            collocations=False,
-            prefer_horizontal=0.85,
+    # Fila 2: métricas de engagement
+    cols2 = st.columns(4)
+    with cols2[0]:
+        st.metric(
+            label="Likes generados (propios)",
+            value=fmt(likes_propios),
+            help="Suma de likes en tweets del candidato"
         )
-        wc.generate(corpus)
-        buf = BytesIO()
-        fig, ax = plt.subplots(figsize=(11, 5))
-        ax.imshow(wc, interpolation="bilinear")
-        ax.axis("off")
-        plt.tight_layout(pad=0)
-        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        buf.seek(0)
-        return buf
-
-    color_wc  = COLORES_CANDIDATO.get(cand_wc, "#1F77B4")
-    buf       = generar_wordcloud(cand_wc, color_wc)
-    pais_wc   = df_prop[df_prop["candidato_nombre"] == cand_wc]["candidato_pais"].iloc[0]
-    tweets_wc = len(df_prop[df_prop["candidato_nombre"] == cand_wc])
-    st.caption(f"🗳️ {pais_wc} · {tweets_wc} tweets analizados")
-    st.image(buf, use_container_width=True)
-    nota_lectura(
-        "Compara las nubes de distintos candidatos para identificar diferencias temáticas. "
-        "Un candidato con palabras como 'seguridad', 'orden', 'frontera' tiene un perfil "
-        "diferente a uno cuyas palabras dominantes son 'trabajo', 'salud' o 'pensiones'."
-    )
-
-    st.divider()
-
-    # ── Tabla de contexto electoral ────────────────────────────────────────
-    seccion(
-        "Contexto electoral y cobertura",
-        "Esta tabla resume las condiciones de cada candidato en el análisis: el período "
-        "cubierto, la etapa electoral (1ra o 2da vuelta) y las métricas básicas capturadas. "
-        "Es el punto de partida para interpretar correctamente cualquier comparación posterior, "
-        "ya que los períodos y contextos no son idénticos entre países."
-    )
-    contexto = (df.groupby(
-        ["candidato_pais","candidato_nombre","candidato_vuelta","periodo_busqueda"])
-        .agg(
-            tweets_capturados = ("tweet_id",        "count"),
-            likes_totales     = ("like_count",      "sum"),
-            views_totales     = ("view_count",      "sum"),
-            seguidores_hoy    = ("author_followers","first"),
+    with cols2[1]:
+        st.metric(
+            label="Likes en tweets ciudadanos",
+            value=fmt(likes_ciudadanos),
+            delta=f"ratio {ratio_likes}x",
+            help="Suma de likes en tweets de ciudadanos sobre el candidato"
         )
-        .reset_index()
-        .sort_values(["candidato_pais","candidato_nombre"])
-        .rename(columns={
-            "candidato_pais":    "País",
-            "candidato_nombre":  "Candidato",
-            "candidato_vuelta":  "Vuelta",
-            "periodo_busqueda":  "Período",
-            "tweets_capturados": "Tweets",
-            "likes_totales":     "Likes",
-            "views_totales":     "Views",
-            "seguidores_hoy":    "Seguidores (hoy)",
-        })
-    )
-    for col in ["Likes","Views","Seguidores (hoy)"]:
-        contexto[col] = contexto[col].apply(lambda x: f"{int(x):,}")
-    st.dataframe(contexto, use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    # ── Cobertura por país ─────────────────────────────────────────────────
-    seccion(
-        "Cobertura por país",
-        "Volumen total de tweets propios capturados y views generados en cada país. "
-        "Esta vista permite dimensionar el peso relativo de cada contexto electoral "
-        "en el conjunto del dataset."
-    )
-    tweets_pais = (df_prop.groupby("candidato_pais")
-                   .agg(tweets=("tweet_id","count"),
-                        likes=("like_count","sum"),
-                        views=("view_count","sum"))
-                   .reset_index())
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        fig_tp = px.bar(
-            tweets_pais, x="candidato_pais", y="tweets",
-            color="candidato_pais", color_discrete_map=COLORES_PAIS,
-            text="tweets", title="Tweets propios capturados por país",
-            labels={"candidato_pais":"","tweets":"Tweets"},
+    with cols2[2]:
+        st.metric(
+            label="Views propios",
+            value=fmt(views_propios),
         )
-        fig_tp.update_traces(texttemplate="%{text:,}", textposition="outside")
-        fig_tp.update_layout(showlegend=False)
-        st.plotly_chart(fig_tp, use_container_width=True)
-
-    with col_b:
-        fig_vp = px.bar(
-            tweets_pais, x="candidato_pais", y="views",
-            color="candidato_pais", color_discrete_map=COLORES_PAIS,
-            text="views", title="Views totales por país",
-            labels={"candidato_pais":"","views":"Views"},
+    with cols2[3]:
+        st.markdown(
+            f"""
+            <div style='background:#f8f9fa;border-radius:8px;padding:14px 16px;
+                        border-left:4px solid {delta_color(ratio_likes)}'>
+                <div style='font-size:0.78em;color:#666;margin-bottom:4px'>Resonancia de engagement</div>
+                <div style='font-size:1.3em;font-weight:600;color:{delta_color(ratio_likes)}'>{delta_label(ratio_likes)}</div>
+                <div style='font-size:0.8em;color:#888;margin-top:2px'>
+                    Por cada like propio, {ratio_likes} likes ciudadanos
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-        fig_vp.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-        fig_vp.update_layout(showlegend=False)
-        st.plotly_chart(fig_vp, use_container_width=True)
 
     nota_lectura(
-        "Un número alto de tweets no implica necesariamente mayor impacto. "
-        "Observa si el país con más tweets también lidera en views, o si hay "
-        "países donde se publica menos pero se genera más alcance por tweet."
+        "Un ratio de resonancia alto (🔥) indica que la conversación ciudadana supera "
+        "en volumen o engagement al mensaje del propio candidato: su figura genera "
+        "debate independientemente de lo que publique. Un ratio bajo (🔇) puede indicar "
+        "menor presencia en la conversación pública o una base de seguidores muy fiel "
+        "pero poco viral."
     )
 
-    st.divider()
+    # ── GRÁFICO ESPEJO: HASHTAGS PROPIOS VS CIUDADANOS ────────────────────
+    if not d_op.empty:
+        st.markdown("#### #️⃣ Hashtags: la agenda del candidato vs la agenda ciudadana")
+        st.markdown(
+            "<p style='color:#666;font-size:0.9em;margin-top:-6px;margin-bottom:16px'>"
+            "¿Los hashtags que usa el candidato son los mismos que usa la gente cuando habla de él? "
+            "Las diferencias revelan brechas entre el mensaje que quiere posicionar y los temas "
+            "que la ciudadanía asocia con su figura."
+            "</p>",
+            unsafe_allow_html=True,
+        )
 
-    # ── Volumen vs Eficiencia ──────────────────────────────────────────────
-    seccion(
-        "Volumen vs Eficiencia · comparación multi-país",
-        "Este es el único gráfico que permite comparar candidatos entre países. "
-        "Al usar el promedio de likes por tweet en lugar de totales, se neutraliza "
-        "el efecto del período de análisis y el nivel de base de seguidores, "
-        "haciendo la comparación más justa metodológicamente."
-    )
-    fig_burbuja = px.scatter(
-        met_global,
-        x="tweets", y="likes_x_tweet",
-        size="views", color="candidato_nombre",
-        color_discrete_map=COLORES_CANDIDATO,
-        symbol="candidato_pais",
-        hover_name="candidato_nombre",
-        hover_data={"candidato_pais":True,"tweets":True,
-                    "likes_x_tweet":True,"views_x_tweet":True,"views":False},
-        title="Volumen (tweets) vs Eficiencia (likes/tweet)",
-        labels={"tweets":"N° tweets capturados",
-                "likes_x_tweet":"Likes promedio por tweet",
-                "candidato_pais":"País"},
-        size_max=60,
-    )
-    fig_burbuja.update_layout(legend_title="Candidato", height=480)
-    st.plotly_chart(fig_burbuja, use_container_width=True)
-    nota_lectura(
-        "El eje X muestra cuánto publica cada candidato; el eje Y, qué tan bien "
-        "responde la audiencia a cada tweet. El tamaño de la burbuja indica el "
-        "alcance total en views. El candidato ideal aparece arriba a la derecha "
-        "(mucho volumen y alta respuesta), pero lo más informativo suele ser "
-        "encontrar candidatos en los extremos: alta eficiencia con poco volumen "
-        "(estrategia selectiva) o mucho volumen con baja respuesta (estrategia de presencia)."
-    )
+        col_ht1, col_ht2 = st.columns(2)
+
+        with col_ht1:
+            ht_cand = top_hashtags(d_cand["hashtags"], n=8)
+            if not ht_cand.empty:
+                fig_ht_c = px.bar(
+                    ht_cand.sort_values("frecuencia"),
+                    x="frecuencia", y="hashtag", orientation="h",
+                    text="frecuencia",
+                    title=f"Hashtags del candidato",
+                    labels={"frecuencia": "Usos", "hashtag": ""},
+                    color_discrete_sequence=[color],
+                )
+                fig_ht_c.update_traces(textposition="outside")
+                fig_ht_c.update_layout(
+                    height=320,
+                    showlegend=False,
+                    title_font_size=14,
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                )
+                st.plotly_chart(fig_ht_c, use_container_width=True)
+
+        with col_ht2:
+            col_ht_op = "hashtags" if "hashtags" in d_op.columns else None
+            if col_ht_op:
+                ht_op = top_hashtags(d_op[col_ht_op], n=8)
+                if not ht_op.empty:
+                    # Color más suave (ciudadanía)
+                    color_ciudadanos = "#7B8FA1"
+                    fig_ht_op = px.bar(
+                        ht_op.sort_values("frecuencia"),
+                        x="frecuencia", y="hashtag", orientation="h",
+                        text="frecuencia",
+                        title=f"Hashtags que usa la ciudadanía",
+                        labels={"frecuencia": "Usos", "hashtag": ""},
+                        color_discrete_sequence=[color_ciudadanos],
+                    )
+                    fig_ht_op.update_traces(textposition="outside")
+                    fig_ht_op.update_layout(
+                        height=320,
+                        showlegend=False,
+                        title_font_size=14,
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                    )
+                    st.plotly_chart(fig_ht_op, use_container_width=True)
+
+        # ── Hashtags compartidos (intersección) ───────────────────────────
+        if not ht_cand.empty and col_ht_op and not ht_op.empty:
+            tags_cand = set(ht_cand["hashtag"].str.lower())
+            tags_op   = set(ht_op["hashtag"].str.lower())
+            comunes   = tags_cand & tags_op
+            solo_cand = tags_cand - tags_op
+            solo_op   = tags_op - tags_cand
+
+            if comunes:
+                st.success(
+                    f"**Agenda compartida** (aparecen en ambos): "
+                    f"{', '.join(f'#{t}' for t in sorted(comunes))}"
+                )
+            if solo_cand:
+                st.info(
+                    f"**Solo en tweets del candidato** (agenda propia): "
+                    f"{', '.join(f'#{t}' for t in sorted(solo_cand))}"
+                )
+            if solo_op:
+                st.warning(
+                    f"**Solo en tweets ciudadanos** (temas que la gente añade): "
+                    f"{', '.join(f'#{t}' for t in sorted(solo_op))}"
+                )
+
+    # ── EVOLUCIÓN TEMPORAL CRUZADA ────────────────────────────────────────
+    if not d_op.empty and "semana" in d_op.columns:
+        st.markdown("#### 📈 Actividad en el tiempo: candidato vs ciudadanía")
+        st.markdown(
+            "<p style='color:#666;font-size:0.9em;margin-top:-6px;margin-bottom:16px'>"
+            "¿La ciudadanía habla más del candidato cuando él publica más, o la conversación "
+            "ciudadana tiene vida propia? Picos simultáneos sugieren reacción directa; "
+            "picos desfasados sugieren que los eventos externos mueven la conversación."
+            "</p>",
+            unsafe_allow_html=True,
+        )
+
+        semanal_cand = (d_cand.groupby("semana")
+                        .agg(tweets=("tweet_id", "count"),
+                             likes=("like_count", "sum"))
+                        .reset_index()
+                        .assign(fuente="Candidato"))
+
+        semanal_op = (d_op.groupby("semana")
+                      .agg(tweets=("tweet_id", "count"),
+                           likes=("like_count", "sum"))
+                      .reset_index()
+                      .assign(fuente="Ciudadanía"))
+
+        semanal_merged = pd.concat([semanal_cand, semanal_op], ignore_index=True)
+
+        metrica_cruce = st.radio(
+            "Métrica temporal",
+            ["tweets", "likes"],
+            format_func=lambda x: {"tweets": "Volumen (tweets)", "likes": "Engagement (likes)"}[x],
+            horizontal=True,
+            key=f"radio_cruce_{candidato}",
+        )
+
+        color_map_cruce = {"Candidato": color, "Ciudadanía": "#7B8FA1"}
+
+        fig_cruce = px.line(
+            semanal_merged,
+            x="semana", y=metrica_cruce,
+            color="fuente",
+            color_discrete_map=color_map_cruce,
+            markers=True,
+            title=f"Actividad semanal: tweets propios vs conversación ciudadana",
+            labels={
+                "semana": "Semana",
+                metrica_cruce: metrica_cruce.capitalize(),
+                "fuente": "",
+            },
+        )
+        fig_cruce.update_layout(height=380, legend=dict(orientation="h", y=1.12))
+        st.plotly_chart(fig_cruce, use_container_width=True)
+
+        nota_lectura(
+            "Cuando la línea ciudadana supera a la del candidato, hay más gente hablando "
+            "de él que él publicando. Si las dos líneas se mueven juntas, su comunicación "
+            "arrastra la conversación. Si se mueven en sentido contrario, hay eventos "
+            "externos que generan conversación independientemente de su estrategia."
+        )
+
+    # ── TIPO DE INTERACCIÓN CIUDADANA ─────────────────────────────────────
+    if not d_op.empty and "tipo_query" in d_op.columns:
+        st.markdown("#### 🔍 ¿Cómo llega la gente a hablar del candidato?")
+        st.markdown(
+            "<p style='color:#666;font-size:0.9em;margin-top:-6px;margin-bottom:16px'>"
+            "Distribución por tipo de búsqueda que capturó cada tweet ciudadano: "
+            "si predominan las menciones directas (@), la gente le habla a él; "
+            "si predominan los hashtags, usa sus etiquetas de campaña; "
+            "si predomina la búsqueda por nombre, habla de él sin etiquetarlo."
+            "</p>",
+            unsafe_allow_html=True,
+        )
+
+        LABELS_TIPO = {
+            "mencion_directa":    "Mención directa (@)",
+            "mencion_directa_t1": "Mención directa (@) — 1a mitad",
+            "mencion_directa_t2": "Mención directa (@) — 2a mitad",
+            "hashtag_campania":   "Hashtag de campaña",
+            "hashtag_t1":         "Hashtag campaña — T1",
+            "hashtag_t2":         "Hashtag campaña — T2",
+            "hashtag_t3":         "Hashtag campaña — T3",
+            "hashtag_t4":         "Hashtag campaña — T4",
+            "busqueda_nombre":    "Búsqueda por nombre",
+            "opinion_contextual": "Opinión contextual",
+        }
+
+        tipo_counts = (d_op["tipo_query"]
+                       .map(LABELS_TIPO)
+                       .fillna(d_op["tipo_query"])
+                       .value_counts()
+                       .reset_index())
+        tipo_counts.columns = ["tipo", "n"]
+
+        # Agrupar categorías para simplificar el gráfico
+        def agrupar_tipo(t):
+            if "Mención"  in t: return "Mención directa (@)"
+            if "Hashtag"  in t: return "Hashtag de campaña"
+            if "nombre"   in t: return "Búsqueda por nombre"
+            if "contextual" in t: return "Opinión contextual"
+            return t
+
+        tipo_counts["tipo_agrupado"] = tipo_counts["tipo"].apply(agrupar_tipo)
+        tipo_agg = (tipo_counts.groupby("tipo_agrupado")["n"]
+                    .sum().reset_index()
+                    .sort_values("n", ascending=False))
+
+        colores_tipo_op = {
+            "Mención directa (@)":  "#4C72B0",
+            "Hashtag de campaña":   "#DD8452",
+            "Búsqueda por nombre":  "#55A868",
+            "Opinión contextual":   "#C44E52",
+        }
+
+        col_pie1, col_pie2 = st.columns([1, 1])
+        with col_pie1:
+            fig_tipo_op = px.pie(
+                tipo_agg,
+                values="n",
+                names="tipo_agrupado",
+                title="¿Cómo encontramos estos tweets?",
+                color="tipo_agrupado",
+                color_discrete_map=colores_tipo_op,
+            )
+            fig_tipo_op.update_traces(textposition="inside", textinfo="percent+label")
+            fig_tipo_op.update_layout(showlegend=False, height=300)
+            st.plotly_chart(fig_tipo_op, use_container_width=True)
+
+        with col_pie2:
+            # Top 5 tweets ciudadanos más virales
+            top_op = (d_op.sort_values("like_count", ascending=False)
+                      .head(3).reset_index(drop=True))
+            if not top_op.empty:
+                st.markdown("**🔥 Tweets ciudadanos más virales sobre este candidato**")
+                for _, row in top_op.iterrows():
+                    with st.container(border=True):
+                        col_a, col_b, col_c = st.columns([3, 1, 1])
+                        autor = row.get("autor_username", row.get("author_username", "—"))
+                        col_a.markdown(f"**@{autor}**")
+                        col_b.metric("❤️", fmt(row["like_count"]))
+                        col_c.metric("🔁", fmt(row["retweet_count"]))
+                        st.markdown(
+                            f"> {str(row['text'])[:160]}"
+                            f"{'…' if len(str(row['text'])) > 160 else ''}"
+                        )
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -397,36 +544,22 @@ def render_pais(pais: str):
 
     seccion(
         "📌 Claves del período",
-        "Hallazgos principales calculados a partir de los datos de este país. "
-        "Sirven como hipótesis de lectura para explorar el resto de las secciones."
+        "Hallazgos principales calculados a partir de los datos de este país."
     )
     col_i1, col_i2, col_i3 = st.columns(3)
     with col_i1:
-        insight_box(
-            f"**Mayor eficiencia:** {top_ef['candidato_nombre']} "
-            f"con {fmt(top_ef['likes_x_tweet'])} likes/tweet"
-        )
+        insight_box(f"**Mayor eficiencia:** {top_ef['candidato_nombre']} con {fmt(top_ef['likes_x_tweet'])} likes/tweet")
     with col_i2:
-        insight_box(
-            f"**Brecha de eficiencia:** {top_ef['candidato_nombre'].split()[0]} "
-            f"genera {ratio:.1f}x más likes/tweet que {low_ef['candidato_nombre'].split()[0]}"
-        )
+        insight_box(f"**Brecha de eficiencia:** {top_ef['candidato_nombre'].split()[0]} genera {ratio:.1f}x más likes/tweet que {low_ef['candidato_nombre'].split()[0]}")
     with col_i3:
-        insight_box(
-            f"**Mayor volumen:** {top_vol['candidato_nombre'].split()[0]} "
-            f"con {fmt(top_vol['tweets'])} tweets capturados"
-        )
+        insight_box(f"**Mayor volumen:** {top_vol['candidato_nombre'].split()[0]} con {fmt(top_vol['tweets'])} tweets capturados")
 
     st.divider()
 
     # ── Engagement total ───────────────────────────────────────────────────
     seccion(
         "Engagement total",
-        "Suma acumulada de likes y views generados por cada candidato durante "
-        "todo el período analizado. Mide el **impacto bruto** de la comunicación: "
-        "a mayor barra, mayor respuesta total de la audiencia. Esta métrica "
-        "favorece a quienes publicaron más tweets, por eso debe leerse junto "
-        "con los promedios por tweet de la sección siguiente."
+        "Suma acumulada de likes y views generados por cada candidato durante todo el período analizado."
     )
     col1, col2 = st.columns(2)
     with col1:
@@ -454,10 +587,8 @@ def render_pais(pais: str):
         st.plotly_chart(fig_views, use_container_width=True)
 
     nota_lectura(
-        "Los likes indican aprobación activa: el usuario decidió interactuar. "
-        "Los views miden alcance pasivo: cuántas veces fue visto el tweet, "
-        "independientemente de si generó reacción. Una brecha grande entre "
-        "views y likes puede indicar contenido que se consume pero no convence."
+        "Los likes indican aprobación activa. Los views miden alcance pasivo. "
+        "Una brecha grande entre views y likes puede indicar contenido que se consume pero no convence."
     )
 
     st.divider()
@@ -465,11 +596,7 @@ def render_pais(pais: str):
     # ── Eficiencia ─────────────────────────────────────────────────────────
     seccion(
         "Eficiencia por tweet",
-        "Promedio de likes y views **por cada tweet publicado**. A diferencia del "
-        "engagement total, esta métrica elimina el efecto del volumen: un candidato "
-        "que publica 10 tweets y genera 5.000 likes tiene una eficiencia de 500 likes/tweet, "
-        "superior a otro que publica 100 tweets y genera 10.000 likes (100 likes/tweet). "
-        "Es la métrica más relevante para comparar estrategias comunicacionales."
+        "Promedio de likes y views por cada tweet publicado. Elimina el efecto del volumen."
     )
     col3, col4 = st.columns(2)
     with col3:
@@ -497,9 +624,8 @@ def render_pais(pais: str):
         st.plotly_chart(fig_vpt, use_container_width=True)
 
     nota_lectura(
-        "Observa si el ranking de eficiencia coincide con el de engagement total. "
-        "Cuando no coinciden, hay una historia interesante: el candidato más activo "
-        "no es necesariamente el que mejor conecta con su audiencia por publicación."
+        "Cuando el ranking de eficiencia no coincide con el de engagement total, "
+        "el candidato más activo no es el que mejor conecta por publicación."
     )
 
     st.divider()
@@ -507,10 +633,7 @@ def render_pais(pais: str):
     # ── Evolución temporal ─────────────────────────────────────────────────
     seccion(
         "Evolución temporal",
-        "Actividad y respuesta semana a semana durante el período electoral. "
-        "Permite identificar momentos de mayor intensidad comunicacional: debates, "
-        "lanzamientos de campaña, eventos polémicos o hitos electorales que generaron "
-        "picos de actividad o engagement."
+        "Actividad y respuesta semana a semana. Permite identificar picos vinculados a debates o eventos."
     )
     semanal = (data.groupby(["semana","candidato_nombre"])
                .agg(tweets=("tweet_id","count"),
@@ -519,44 +642,28 @@ def render_pais(pais: str):
                .reset_index())
 
     metrica_temp = st.radio(
-        "Métrica a visualizar",
-        ["likes","tweets","views"],
-        horizontal=True,
-        key=f"radio_temp_{pais}",
-        help="'Tweets' muestra el volumen de publicación. 'Likes' y 'Views' muestran la respuesta de la audiencia."
+        "Métrica a visualizar", ["likes","tweets","views"],
+        horizontal=True, key=f"radio_temp_{pais}",
     )
     fig_temp = px.line(
         semanal, x="semana", y=metrica_temp,
         color="candidato_nombre", color_discrete_map=COLORES_CANDIDATO,
-        markers=True,
-        title=f"{metrica_temp.capitalize()} por semana — {pais}",
-        labels={"semana":"Semana", metrica_temp:metrica_temp.capitalize(),
-                "candidato_nombre":"Candidato"},
+        markers=True, title=f"{metrica_temp.capitalize()} por semana — {pais}",
+        labels={"semana":"Semana", metrica_temp:metrica_temp.capitalize(), "candidato_nombre":"Candidato"},
     )
     fig_temp.update_layout(legend_title="Candidato", height=400)
     st.plotly_chart(fig_temp, use_container_width=True)
-    nota_lectura(
-        "Busca picos simultáneos en varios candidatos: suelen coincidir con debates "
-        "o eventos electorales relevantes. Un candidato con picos aislados puede "
-        "haber protagonizado un momento viral propio. Cambia entre 'tweets' y 'likes' "
-        "para ver si los picos de publicación se traducen en picos de respuesta."
-    )
+    nota_lectura("Busca picos simultáneos — suelen coincidir con debates electorales.")
 
     st.divider()
 
     # ── Tipo de tweet ──────────────────────────────────────────────────────
     seccion(
         "Composición de tweets",
-        "Desglose del tipo de publicaciones de cada candidato: tweets originales "
-        "(contenido propio), replies (respuestas a otros usuarios), retweets (difusión "
-        "de contenido ajeno) y quotes (retweet con comentario propio). La composición "
-        "revela la **estrategia conversacional**: un candidato con muchos replies es "
-        "más dialógico; uno con muchos originales tiene una comunicación más broadcast."
+        "Desglose por tipo: originales, replies, retweets y quotes. Revela la estrategia conversacional."
     )
-    tipos_cand = (data_all.groupby(["candidato_nombre","tipo"])
-                  .size().reset_index(name="n"))
+    tipos_cand = (data_all.groupby(["candidato_nombre","tipo"]).size().reset_index(name="n"))
     col5, col6 = st.columns(2)
-
     with col5:
         fig_tipo = px.bar(
             tipos_cand, x="candidato_nombre", y="n",
@@ -567,7 +674,6 @@ def render_pais(pais: str):
         )
         fig_tipo.update_layout(xaxis_tickangle=-20)
         st.plotly_chart(fig_tipo, use_container_width=True)
-
     with col6:
         tipos_pais_df = data_all["tipo"].value_counts().reset_index()
         tipos_pais_df.columns = ["tipo","n"]
@@ -578,44 +684,28 @@ def render_pais(pais: str):
         )
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    nota_lectura(
-        "Los tweets originales son el contenido de campaña puro. "
-        "Un alto porcentaje de replies sugiere un candidato que debate y responde; "
-        "puede ser una fortaleza (cercano, accesible) o una debilidad (reactivo, "
-        "sin agenda propia). Los retweets indican qué voces amplifican."
-    )
+    nota_lectura("Alto porcentaje de replies = candidato dialógico. Alto de originales = broadcast.")
 
     st.divider()
 
     # ── Hashtags ───────────────────────────────────────────────────────────
     seccion(
         "Hashtags más usados",
-        "Los hashtags son las etiquetas temáticas que los candidatos usan para "
-        "posicionar sus mensajes en conversaciones más amplias o para crear narrativas "
-        "propias de campaña. Su análisis revela los **ejes temáticos** de la comunicación "
-        "y el grado de coordinación con otros actores del ecosistema político."
+        "Etiquetas temáticas que posicionan el mensaje del candidato en conversaciones más amplias."
     )
     col7, col8 = st.columns([1, 2])
     with col7:
-        candidato_sel = st.selectbox(
-            "Ver hashtags de:",
-            ["Todos"] + candidatos,
-            key=f"ht_sel_{pais}",
-        )
+        candidato_sel = st.selectbox("Ver hashtags de:", ["Todos"] + candidatos, key=f"ht_sel_{pais}")
     with col8:
-        n_tags = st.slider("N° de hashtags a mostrar", 5, 20, 10, key=f"ht_n_{pais}")
+        n_tags = st.slider("N° de hashtags", 5, 20, 10, key=f"ht_n_{pais}")
 
-    ht_data = (data if candidato_sel == "Todos"
-               else data[data["candidato_nombre"] == candidato_sel])
+    ht_data = data if candidato_sel == "Todos" else data[data["candidato_nombre"] == candidato_sel]
     ht_df = top_hashtags(ht_data["hashtags"], n=n_tags)
-
     if not ht_df.empty:
-        color_ht = (COLORES_PAIS[pais] if candidato_sel == "Todos"
-                    else COLORES_CANDIDATO.get(candidato_sel, "#1F77B4"))
+        color_ht = COLORES_PAIS[pais] if candidato_sel == "Todos" else COLORES_CANDIDATO.get(candidato_sel, "#1F77B4")
         fig_ht = px.bar(
             ht_df.sort_values("frecuencia"),
-            x="frecuencia", y="hashtag", orientation="h",
-            text="frecuencia",
+            x="frecuencia", y="hashtag", orientation="h", text="frecuencia",
             title=f"Top {n_tags} hashtags — {candidato_sel}",
             labels={"frecuencia":"Frecuencia","hashtag":""},
             color_discrete_sequence=[color_ht],
@@ -623,60 +713,316 @@ def render_pais(pais: str):
         fig_ht.update_traces(textposition="outside")
         fig_ht.update_layout(height=max(300, n_tags * 32))
         st.plotly_chart(fig_ht, use_container_width=True)
-        nota_lectura(
-            "Distingue entre hashtags propios de campaña (suelen incluir el nombre del "
-            "candidato o una consigna propia) y hashtags de agenda pública (debates, "
-            "eventos). Los hashtags compartidos entre candidatos revelan las temáticas "
-            "que dominaron el debate electoral."
-        )
 
     st.divider()
 
     # ── Top tweets ─────────────────────────────────────────────────────────
     seccion(
         "Tweets más virales",
-        "Los tweets con mayor impacto del período, ordenables por likes, views o retweets. "
-        "Son el material empírico más directo: muestran exactamente qué tipo de contenido "
-        "generó la mayor respuesta en la audiencia, en las propias palabras del candidato."
+        "Los tweets con mayor impacto del período. Muestran qué contenido conectó con la audiencia."
     )
     col9, col10 = st.columns([1, 2])
     with col9:
-        cand_top = st.selectbox(
-            "Filtrar por candidato:",
-            ["Todos"] + candidatos,
-            key=f"top_sel_{pais}",
-        )
+        cand_top = st.selectbox("Filtrar por candidato:", ["Todos"] + candidatos, key=f"top_sel_{pais}")
     with col10:
         metrica_top = st.radio(
             "Ordenar por:",
             ["like_count","view_count","retweet_count"],
-            format_func=lambda x: {"like_count":"Likes",
-                                   "view_count":"Views",
-                                   "retweet_count":"Retweets"}[x],
-            horizontal=True,
-            key=f"top_met_{pais}",
+            format_func=lambda x: {"like_count":"Likes","view_count":"Views","retweet_count":"Retweets"}[x],
+            horizontal=True, key=f"top_met_{pais}",
         )
 
-    top_data = (data if cand_top == "Todos"
-                else data[data["candidato_nombre"] == cand_top])
-    top5 = (top_data.sort_values(metrica_top, ascending=False)
-            .head(5).reset_index(drop=True))
-
+    top_data = data if cand_top == "Todos" else data[data["candidato_nombre"] == cand_top]
+    top5 = top_data.sort_values(metrica_top, ascending=False).head(5).reset_index(drop=True)
     for _, row in top5.iterrows():
         with st.container(border=True):
             ca, cb, cc, cd = st.columns([2, 1, 1, 1])
-            ca.markdown(
-                f"**{row['candidato_nombre']}**  \n"
-                f"🗓️ {str(row['created_at'])[:10]}"
-            )
+            ca.markdown(f"**{row['candidato_nombre']}**  \n🗓️ {str(row['created_at'])[:10]}")
             cb.metric("❤️ Likes",  fmt(row["like_count"]))
             cc.metric("🔁 RTs",    fmt(row["retweet_count"]))
             cd.metric("👁️ Views",  fmt(row["view_count"]))
-            st.markdown(
-                f"> {str(row['text'])[:220]}"
-                f"{'…' if len(str(row['text'])) > 220 else ''}"
-            )
+            st.markdown(f"> {str(row['text'])[:220]}{'…' if len(str(row['text'])) > 220 else ''}")
             st.markdown(f"[Ver tweet en X ↗]({row['tweet_url']})")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # SECCIÓN DE OPINIÓN CIUDADANA POR CANDIDATO
+    # ════════════════════════════════════════════════════════════════════════
+    if HAY_OPINION:
+        st.divider()
+        st.markdown(
+            f"""
+            <div style='background:linear-gradient(90deg,#f0f4ff 0%,#f8f8f8 100%);
+                        border-radius:10px;padding:18px 22px;margin-bottom:6px;
+                        border:1px solid #e0e6f0'>
+                <h3 style='margin:0 0 4px 0;font-size:1.2em'>
+                    🗣️ Selecciona un candidato para ver qué dice la gente sobre él
+                </h3>
+                <p style='margin:0;color:#666;font-size:0.9em'>
+                    Cada análisis muestra el contraste entre la comunicación del candidato 
+                    y la conversación que genera en la ciudadanía.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        candidato_op = st.selectbox(
+            "Ver opinión ciudadana de:",
+            candidatos,
+            key=f"op_sel_{pais}",
+        )
+        color_sel = COLORES_CANDIDATO.get(candidato_op, "#1F77B4")
+        render_scorecard_opinion(candidato_op, color_sel)
+
+
+# ── TABS PRINCIPALES ──────────────────────────────────────────────────────────
+tab_general, tab_chile, tab_bolivia, tab_ecuador, tab_candidato = st.tabs([
+    "🌎 Vista general",
+    "🇨🇱 Chile",
+    "🇧🇴 Bolivia",
+    "🇪🇨 Ecuador",
+    "🧠 Perfil de candidato",
+])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 1 · VISTA GENERAL
+# ════════════════════════════════════════════════════════════════════════════
+with tab_general:
+    st.title("🗳️ Observatorio de Comunicación Política · LATAM 2025")
+    st.markdown("""
+    Este observatorio analiza la actividad en **Twitter/X** de los principales candidatos
+    presidenciales de Chile, Bolivia y Ecuador durante sus respectivos períodos electorales de 2025.
+    Incluye dos capas de análisis: la **comunicación propia** de cada candidato y la 
+    **opinión ciudadana** que generan en la plataforma.
+    """)
+    st.markdown(NOTA_METODOLOGICA)
+    st.divider()
+
+    # ── KPIs combinados ────────────────────────────────────────────────────
+    seccion(
+        "Totales capturados",
+        "Resumen de ambas capas de datos: tweets propios de candidatos y tweets ciudadanos."
+    )
+
+    if HAY_OPINION:
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Tweets propios",       fmt(len(df_prop)))
+        c2.metric("Tweets ciudadanos",    fmt(len(df_op)))
+        c3.metric("Likes (propios)",      fmt(df_prop["like_count"].sum()))
+        c4.metric("Likes (ciudadanos)",   fmt(df_op["like_count"].sum()))
+        c5.metric("Autores únicos",       fmt(df_op["autor_username"].nunique() if "autor_username" in df_op.columns else 0))
+        c6.metric("Candidatos",           df["candidato_nombre"].nunique())
+    else:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Tweets propios",  fmt(len(df_prop)))
+        c2.metric("Likes",           fmt(df_prop["like_count"].sum()))
+        c3.metric("Views",           fmt(df_prop["view_count"].sum()))
+        c4.metric("Retweets",        fmt(df_prop["retweet_count"].sum()))
+        c5.metric("Candidatos",      df["candidato_nombre"].nunique())
+
+    st.divider()
+
+    # ── Insights ──────────────────────────────────────────────────────────
+    met_global = metricas_candidatos(df_prop)
+    top_ef  = met_global.sort_values("likes_x_tweet", ascending=False).iloc[0]
+    top_vol = met_global.sort_values("tweets",         ascending=False).iloc[0]
+    top_vw  = met_global.sort_values("views",          ascending=False).iloc[0]
+
+    seccion("📌 Claves del período", "Tres hallazgos destacados del dataset.")
+    col_i1, col_i2, col_i3 = st.columns(3)
+    with col_i1:
+        insight_box(f"**Mayor eficiencia:** {top_ef['candidato_nombre']} ({fmt(top_ef['likes_x_tweet'])} likes/tweet)")
+    with col_i2:
+        insight_box(f"**Mayor volumen:** {top_vol['candidato_nombre']} ({fmt(top_vol['tweets'])} tweets)")
+    with col_i3:
+        insight_box(f"**Mayor alcance:** {top_vw['candidato_nombre']} ({fmt(top_vw['views'])} views totales)")
+
+    # ── Insight de resonancia global ──────────────────────────────────────
+    if HAY_OPINION:
+        st.divider()
+        seccion(
+            "🗣️ Resonancia ciudadana global",
+            "Comparación entre la actividad propia de cada candidato y el volumen "
+            "de conversación que genera entre la ciudadanía."
+        )
+
+        col_cand_op = "candidato_nombre" if "candidato_nombre" in df_op.columns else "candidato"
+        res_op = (df_op.groupby(col_cand_op)
+                  .agg(tweets_ciudadanos=("tweet_id","count"),
+                       likes_ciudadanos=("like_count","sum"))
+                  .reset_index()
+                  .rename(columns={col_cand_op: "candidato_nombre"}))
+
+        res_prop = (df_prop.groupby("candidato_nombre")
+                    .agg(tweets_propios=("tweet_id","count"),
+                         likes_propios=("like_count","sum"),
+                         pais=("candidato_pais","first"))
+                    .reset_index())
+
+        res_merged = res_prop.merge(res_op, on="candidato_nombre", how="left").fillna(0)
+        res_merged["ratio_resonancia"] = (
+            res_merged["tweets_ciudadanos"] / res_merged["tweets_propios"].clip(lower=1)
+        ).round(1)
+        res_merged = res_merged.sort_values("ratio_resonancia", ascending=False)
+
+        fig_res = px.bar(
+            res_merged,
+            x="candidato_nombre", y="ratio_resonancia",
+            color="pais", color_discrete_map=COLORES_PAIS,
+            text="ratio_resonancia",
+            title="Ratio de resonancia: tweets ciudadanos / tweets propios",
+            labels={"candidato_nombre":"","ratio_resonancia":"Tweets ciudadanos por tweet propio","pais":"País"},
+        )
+        fig_res.update_traces(texttemplate="%{text:.1f}x", textposition="outside")
+        fig_res.update_layout(xaxis_tickangle=-20, height=420)
+        fig_res.add_hline(y=1, line_dash="dot", line_color="gray",
+                          annotation_text="Paridad (1 tweet ciudadano por tweet propio)")
+        st.plotly_chart(fig_res, use_container_width=True)
+        nota_lectura(
+            "Por encima de 1x: la ciudadanía genera más conversación de la que el "
+            "candidato publica. Por debajo de 1x: el candidato publica más de lo que "
+            "la gente habla de él. La línea punteada marca la paridad."
+        )
+
+    st.divider()
+
+    # ── Wordcloud ─────────────────────────────────────────────────────────
+    seccion(
+        "¿De qué habla cada candidato?",
+        "Términos más frecuentes en los tweets propios de cada candidato (stopwords eliminadas)."
+    )
+
+    STOPWORDS_ES = {
+        "de","la","el","en","y","a","los","del","se","las","por","un","para",
+        "con","una","su","al","lo","como","más","pero","sus","le","ya","o",
+        "este","sí","porque","esta","entre","cuando","muy","sin","sobre",
+        "también","me","hasta","hay","donde","han","yo","él","ella","nos",
+        "todo","esta","estos","estas","fue","son","ser","tiene","tenemos",
+        "que","es","no","si","te","mi","tu","http","https","t","co","amp",
+        "rt","via","hoy","ayer","así","bien","gran","cada","hacer","puede",
+        "nuestro","nuestra","nuestros","nuestras","está","están","tiene",
+        "tener","solo","todos","todas","otro","otra","años","Chile","Bolivia",
+        "Ecuador","país","gobierno","presidente","presidenta",
+    }
+
+    candidatos_lista = sorted(df_prop["candidato_nombre"].unique().tolist())
+    cand_wc = st.selectbox("Selecciona un candidato", candidatos_lista, key="wc_candidato")
+
+    @st.cache_data
+    def generar_wordcloud(candidato: str, color: str) -> BytesIO:
+        textos = df_prop[df_prop["candidato_nombre"] == candidato]["text"].dropna()
+        def limpiar(texto):
+            texto = re.sub(r"http\S+", "", texto)
+            texto = re.sub(r"@\w+", "", texto)
+            texto = re.sub(r"#(\w+)", r"\1", texto)
+            texto = re.sub(r"[^\w\sáéíóúüñÁÉÍÓÚÜÑ]", " ", texto)
+            return texto.lower()
+        corpus = " ".join(limpiar(t) for t in textos)
+        wc = WordCloud(
+            width=900, height=420, background_color="white",
+            color_func=lambda *args, **kwargs: color,
+            stopwords=STOPWORDS_ES, min_word_length=4,
+            max_words=80, collocations=False, prefer_horizontal=0.85,
+        )
+        wc.generate(corpus)
+        buf = BytesIO()
+        fig, ax = plt.subplots(figsize=(11, 5))
+        ax.imshow(wc, interpolation="bilinear")
+        ax.axis("off")
+        plt.tight_layout(pad=0)
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+
+    color_wc  = COLORES_CANDIDATO.get(cand_wc, "#1F77B4")
+    buf       = generar_wordcloud(cand_wc, color_wc)
+    pais_wc   = df_prop[df_prop["candidato_nombre"] == cand_wc]["candidato_pais"].iloc[0]
+    tweets_wc = len(df_prop[df_prop["candidato_nombre"] == cand_wc])
+    st.caption(f"🗳️ {pais_wc} · {tweets_wc} tweets analizados")
+    st.image(buf, use_container_width=True)
+    nota_lectura("Compara las nubes de distintos candidatos para identificar diferencias temáticas.")
+
+    st.divider()
+
+    # ── Tabla de contexto electoral ────────────────────────────────────────
+    seccion("Contexto electoral y cobertura", "Condiciones de cada candidato en el análisis.")
+    contexto = (df.groupby(["candidato_pais","candidato_nombre","candidato_vuelta","periodo_busqueda"])
+                .agg(
+                    tweets_capturados = ("tweet_id","count"),
+                    likes_totales     = ("like_count","sum"),
+                    views_totales     = ("view_count","sum"),
+                    seguidores_hoy    = ("author_followers","first"),
+                )
+                .reset_index()
+                .sort_values(["candidato_pais","candidato_nombre"])
+                .rename(columns={
+                    "candidato_pais":"País","candidato_nombre":"Candidato",
+                    "candidato_vuelta":"Vuelta","periodo_busqueda":"Período",
+                    "tweets_capturados":"Tweets","likes_totales":"Likes",
+                    "views_totales":"Views","seguidores_hoy":"Seguidores (hoy)",
+                }))
+    for col in ["Likes","Views","Seguidores (hoy)"]:
+        contexto[col] = contexto[col].apply(lambda x: f"{int(x):,}")
+    st.dataframe(contexto, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Cobertura por país ─────────────────────────────────────────────────
+    seccion("Cobertura por país", "Volumen total de tweets propios y views por país.")
+    tweets_pais = (df_prop.groupby("candidato_pais")
+                   .agg(tweets=("tweet_id","count"), likes=("like_count","sum"), views=("view_count","sum"))
+                   .reset_index())
+    col_a, col_b = st.columns(2)
+    with col_a:
+        fig_tp = px.bar(
+            tweets_pais, x="candidato_pais", y="tweets",
+            color="candidato_pais", color_discrete_map=COLORES_PAIS,
+            text="tweets", title="Tweets propios por país",
+            labels={"candidato_pais":"","tweets":"Tweets"},
+        )
+        fig_tp.update_traces(texttemplate="%{text:,}", textposition="outside")
+        fig_tp.update_layout(showlegend=False)
+        st.plotly_chart(fig_tp, use_container_width=True)
+    with col_b:
+        fig_vp = px.bar(
+            tweets_pais, x="candidato_pais", y="views",
+            color="candidato_pais", color_discrete_map=COLORES_PAIS,
+            text="views", title="Views totales por país",
+            labels={"candidato_pais":"","views":"Views"},
+        )
+        fig_vp.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
+        fig_vp.update_layout(showlegend=False)
+        st.plotly_chart(fig_vp, use_container_width=True)
+
+    nota_lectura("Un número alto de tweets no implica mayor impacto.")
+
+    st.divider()
+
+    # ── Volumen vs Eficiencia ──────────────────────────────────────────────
+    seccion(
+        "Volumen vs Eficiencia · comparación multi-país",
+        "El único gráfico que permite comparar candidatos entre países, normalizando por likes/tweet."
+    )
+    fig_burbuja = px.scatter(
+        met_global,
+        x="tweets", y="likes_x_tweet",
+        size="views", color="candidato_nombre",
+        color_discrete_map=COLORES_CANDIDATO,
+        symbol="candidato_pais",
+        hover_name="candidato_nombre",
+        hover_data={"candidato_pais":True,"tweets":True,"likes_x_tweet":True,"views_x_tweet":True,"views":False},
+        title="Volumen (tweets) vs Eficiencia (likes/tweet)",
+        labels={"tweets":"N° tweets","likes_x_tweet":"Likes promedio por tweet","candidato_pais":"País"},
+        size_max=60,
+    )
+    fig_burbuja.update_layout(legend_title="Candidato", height=480)
+    st.plotly_chart(fig_burbuja, use_container_width=True)
+    nota_lectura(
+        "El eje X muestra cuánto publica; el eje Y, qué tan bien responde la audiencia. "
+        "Tamaño de burbuja = alcance total en views."
+    )
 
 
 # ── TABS DE PAÍS ──────────────────────────────────────────────────────────────
@@ -685,9 +1031,9 @@ with tab_chile:
     st.caption("Período analizado: 17 sept – 14 dic 2025 · 1ra y 2da vuelta")
     st.markdown("""
     Chile celebró elecciones presidenciales en dos vueltas. El análisis cubre desde
-    el inicio de la campaña oficial hasta el balotaje, permitiendo observar cómo
-    evolucionó la comunicación digital de los candidatos a lo largo del proceso.
-    Se incluyen cinco candidatos con presencia activa en Twitter/X durante el período.
+    el inicio de la campaña oficial hasta el balotaje. Se incluyen cinco candidatos.
+    Al final de cada sección encontrarás el análisis de **opinión ciudadana** para
+    ver qué dice la gente sobre cada candidato.
     """)
     render_pais("Chile")
 
@@ -696,9 +1042,7 @@ with tab_bolivia:
     st.caption("Período analizado: 13 jul – 19 oct 2025 · 2da vuelta")
     st.markdown("""
     El análisis de Bolivia se concentra en la segunda vuelta electoral,
-    comparando la comunicación digital de los dos candidatos finalistas.
-    El período más acotado (3 meses) y el menor volumen de tweets reflejan
-    un ecosistema digital diferente al de Chile o Ecuador.
+    comparando los dos candidatos finalistas.
     """)
     render_pais("Bolivia")
 
@@ -706,10 +1050,9 @@ with tab_ecuador:
     st.title("🇪🇨 Ecuador — Elecciones presidenciales 2025")
     st.caption("Período analizado: 5 ene – 13 abr 2025 · 2da vuelta")
     st.markdown("""
-    Ecuador fue el primer país del estudio en celebrar elecciones en 2025.
-    El análisis cubre la segunda vuelta entre Daniel Noboa, presidente en ejercicio
-    que buscaba la reelección, y Luisa González. El contexto de incumbencia
-    es relevante para interpretar las diferencias de alcance entre ambos candidatos.
+    Ecuador fue el primer país en celebrar elecciones en 2025. Segunda vuelta entre 
+    Daniel Noboa (incumbente) y Luisa González. El contexto de incumbencia es relevante 
+    para interpretar las diferencias de alcance.
     """)
     render_pais("Ecuador")
 
@@ -720,15 +1063,12 @@ with tab_ecuador:
 with tab_candidato:
     st.title("🧠 Perfil de candidato")
     st.markdown("""
-    Análisis individual y detallado de cada candidato. Incluye una clasificación
-    automática de su estrategia comunicacional, la evolución de su actividad,
-    la distribución estadística de su engagement y sus tweets más virales.
+    Análisis individual y detallado. Incluye clasificación de estrategia comunicacional,
+    evolución semanal, distribución de engagement, hashtags y tweets más virales.
+    Al final, el análisis completo de **opinión ciudadana** sobre ese candidato.
     """)
 
-    cand = st.selectbox(
-        "Selecciona un candidato",
-        df["candidato_nombre"].unique(),
-    )
+    cand = st.selectbox("Selecciona un candidato", df["candidato_nombre"].unique())
 
     data_c     = df_prop[df_prop["candidato_nombre"] == cand].copy()
     data_c_all = df[df["candidato_nombre"] == cand].copy()
@@ -758,29 +1098,19 @@ with tab_candidato:
     eng_label = ("alto engagement" if lpt > media_lpt_pais else "engagement moderado")
     estrategia = {
         ("alto volumen",  "alto engagement"):
-            "**Estrategia dominante:** publica con alta frecuencia y cada publicación "
-            "genera una respuesta considerable. Es la combinación más efectiva.",
+            "**Estrategia dominante:** publica con alta frecuencia y cada publicación genera respuesta considerable.",
         ("alto volumen",  "engagement moderado"):
-            "**Estrategia de presencia:** mantiene alta visibilidad pero el impacto "
-            "promedio por tweet es inferior a la media. Cantidad sobre calidad.",
+            "**Estrategia de presencia:** alta visibilidad pero impacto promedio inferior a la media. Cantidad sobre calidad.",
         ("bajo volumen",  "alto engagement"):
-            "**Estrategia selectiva:** publica con moderación pero cada tweet resuena "
-            "más que el promedio. Apuesta por la calidad sobre la cantidad.",
+            "**Estrategia selectiva:** publica con moderación pero cada tweet resuena más que el promedio.",
         ("bajo volumen",  "engagement moderado"):
-            "**Estrategia limitada:** baja frecuencia de publicación y respuesta "
-            "inferior al promedio del país. Menor presencia digital relativa.",
+            "**Estrategia limitada:** baja frecuencia y respuesta inferior al promedio del país.",
     }
 
-    seccion(
-        "📌 Perfil comunicacional",
-        "Clasificación automática basada en dos dimensiones: volumen de publicación "
-        "(tweets propios respecto a la media del conjunto) y engagement (likes por tweet "
-        "respecto a la media del país). Genera cuatro perfiles estratégicos posibles."
-    )
+    seccion("📌 Perfil comunicacional", "Clasificación automática basada en volumen y engagement.")
     insight_box(
         f"**{cand}** · {pais_c} · {data_c['candidato_vuelta'].iloc[0]}  \n"
-        f"Publicó **{tweets} tweets propios** · promedio de **{int(lpt):,} likes/tweet** "
-        f"y **{int(vpt):,} views/tweet** · "
+        f"**{tweets} tweets propios** · **{int(lpt):,} likes/tweet** · **{int(vpt):,} views/tweet**  \n"
         f"Clasificación: **{vol_label}** · **{eng_label}**  \n\n"
         f"{estrategia.get((vol_label, eng_label), '')}"
     )
@@ -788,21 +1118,11 @@ with tab_candidato:
     st.divider()
 
     # Evolución temporal
-    seccion(
-        "Evolución semanal",
-        "Actividad semana a semana del candidato. El gráfico de área permite ver "
-        "tanto la tendencia general como la magnitud de cada semana. Útil para "
-        "identificar en qué momentos concentró su comunicación."
-    )
+    seccion("Evolución semanal", "Actividad semana a semana del candidato.")
     semanal_c = (data_c.groupby("semana")
-                 .agg(tweets=("tweet_id","count"),
-                      likes=("like_count","sum"),
-                      views=("view_count","sum"))
+                 .agg(tweets=("tweet_id","count"), likes=("like_count","sum"), views=("view_count","sum"))
                  .reset_index())
-    metrica_c = st.radio(
-        "Métrica", ["likes","tweets","views"],
-        horizontal=True, key="radio_cand",
-    )
+    metrica_c = st.radio("Métrica", ["likes","tweets","views"], horizontal=True, key="radio_cand")
     color_c = COLORES_CANDIDATO.get(cand, "#1F77B4")
     fig_ev = px.area(
         semanal_c, x="semana", y=metrica_c,
@@ -811,62 +1131,37 @@ with tab_candidato:
         color_discrete_sequence=[color_c],
     )
     st.plotly_chart(fig_ev, use_container_width=True)
-    nota_lectura(
-        "Los picos pueden corresponder a debates, anuncios de campaña o momentos "
-        "de controversia. Cambia entre 'tweets' y 'likes' para ver si publicó más "
-        "en esas semanas o si el contenido existente simplemente tuvo más repercusión."
-    )
+    nota_lectura("Los picos pueden corresponder a debates o momentos de controversia.")
 
     st.divider()
 
     # Composición y distribución
-    seccion(
-        "Composición y distribución de engagement",
-        "Dos vistas complementarias: el desglose por tipo de publicación revela la "
-        "estrategia conversacional; el histograma de likes muestra si el engagement "
-        "está concentrado en pocos tweets virales o distribuido de forma homogénea."
-    )
+    seccion("Composición y distribución de engagement", "Tipo de publicación e histograma de likes.")
     col_a, col_b = st.columns(2)
     with col_a:
         tipos_c = data_c_all["tipo"].value_counts().reset_index()
         tipos_c.columns = ["tipo","n"]
-        fig_pie_c = px.pie(
-            tipos_c, values="n", names="tipo",
-            title="Tipos de publicación",
-            color_discrete_map=COLORES_TIPO,
-        )
+        fig_pie_c = px.pie(tipos_c, values="n", names="tipo", title="Tipos de publicación",
+                           color_discrete_map=COLORES_TIPO)
         st.plotly_chart(fig_pie_c, use_container_width=True)
     with col_b:
-        fig_hist = px.histogram(
-            data_c, x="like_count", nbins=20,
-            title="Distribución de likes por tweet",
-            labels={"like_count":"Likes por tweet","count":"N° tweets"},
-            color_discrete_sequence=[color_c],
-        )
+        fig_hist = px.histogram(data_c, x="like_count", nbins=20,
+                                title="Distribución de likes por tweet",
+                                labels={"like_count":"Likes por tweet","count":"N° tweets"},
+                                color_discrete_sequence=[color_c])
         st.plotly_chart(fig_hist, use_container_width=True)
-
-    nota_lectura(
-        "En el histograma, una distribución muy sesgada a la derecha (cola larga) "
-        "indica que el promedio de likes está inflado por pocos tweets muy virales. "
-        "Una distribución más uniforme indica un engagement más consistente. "
-        "Ambos patrones son válidos pero implican estrategias distintas."
-    )
+    nota_lectura("Cola larga en el histograma = promedio inflado por pocos tweets virales.")
 
     st.divider()
 
     # Hashtags
-    seccion(
-        "Hashtags más usados",
-        "Los hashtags propios de este candidato. Revelan sus ejes de campaña, "
-        "las temáticas que buscó posicionar y los eventos en que participó activamente."
-    )
+    seccion("Hashtags más usados", "Ejes de campaña y temáticas posicionadas por este candidato.")
     n_ht = st.slider("N° de hashtags", 5, 20, 10, key="ht_cand")
     ht_c = top_hashtags(data_c["hashtags"], n=n_ht)
     if not ht_c.empty:
         fig_ht_c = px.bar(
             ht_c.sort_values("frecuencia"),
-            x="frecuencia", y="hashtag", orientation="h",
-            text="frecuencia",
+            x="frecuencia", y="hashtag", orientation="h", text="frecuencia",
             title=f"Top {n_ht} hashtags de {cand}",
             labels={"frecuencia":"Frecuencia","hashtag":""},
             color_discrete_sequence=[color_c],
@@ -877,24 +1172,16 @@ with tab_candidato:
 
     st.divider()
 
-    # Top tweets
-    seccion(
-        "🔥 Tweets más virales",
-        "Los tweets con mayor impacto del período. Son la evidencia más directa "
-        "de qué tipo de mensajes conectaron con la audiencia: tono, tema, formato."
-    )
+    # Top tweets propios
+    seccion("🔥 Tweets más virales", "Los tweets con mayor impacto del período.")
     metrica_tv = st.radio(
         "Ordenar por:",
         ["like_count","view_count","retweet_count"],
-        format_func=lambda x: {"like_count":"Likes",
-                               "view_count":"Views",
-                               "retweet_count":"Retweets"}[x],
+        format_func=lambda x: {"like_count":"Likes","view_count":"Views","retweet_count":"Retweets"}[x],
         horizontal=True, key="met_top_cand",
     )
-    n_top = st.slider("N° de tweets a mostrar", 3, 10, 5, key="n_top_cand")
-    top_c = (data_c.sort_values(metrica_tv, ascending=False)
-             .head(n_top).reset_index(drop=True))
-
+    n_top = st.slider("N° de tweets", 3, 10, 5, key="n_top_cand")
+    top_c = data_c.sort_values(metrica_tv, ascending=False).head(n_top).reset_index(drop=True)
     for _, row in top_c.iterrows():
         with st.container(border=True):
             ca, cb, cc, cd = st.columns([2, 1, 1, 1])
@@ -902,8 +1189,8 @@ with tab_candidato:
             cb.metric("❤️ Likes",  fmt(row["like_count"]))
             cc.metric("🔁 RTs",    fmt(row["retweet_count"]))
             cd.metric("👁️ Views",  fmt(row["view_count"]))
-            st.markdown(
-                f"> {str(row['text'])[:220]}"
-                f"{'…' if len(str(row['text'])) > 220 else ''}"
-            )
+            st.markdown(f"> {str(row['text'])[:220]}{'…' if len(str(row['text'])) > 220 else ''}")
             st.markdown(f"[Ver tweet en X ↗]({row['tweet_url']})")
+
+    # ── OPINIÓN CIUDADANA EN PERFIL ────────────────────────────────────────
+    render_scorecard_opinion(cand, color_c)
