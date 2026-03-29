@@ -71,7 +71,7 @@ def load_opinion():
 
 @st.cache_data
 def load_perfiles():
-    # Busca cualquier archivo perfiles_*.csv en /data
+    # Busca cualquier archivo perfiles_20260328_204225.csv en /data
     archivos = glob.glob("data/perfiles_*.csv")
     if not archivos:
         return pd.DataFrame()
