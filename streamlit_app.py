@@ -305,7 +305,7 @@ def generar_wordcloud(candidato: str, color: str) -> BytesIO:
     return buf
 
 # ── GRÁFICO TEMPORAL CON HITOS ─────────────────────────────────────────────────
-def render_timeline_hitos(pais: str, data: pd.DataFrame):
+def render_timeline_hitos(pais: str, data: pd.DataFrame, ctx: str = "tab"):
     """Línea de likes semanales por candidato con líneas verticales en hitos electorales."""
     semanal = (
         data.groupby(["semana", "candidato_nombre"])
@@ -318,7 +318,7 @@ def render_timeline_hitos(pais: str, data: pd.DataFrame):
         ["likes", "tweets"],
         format_func=lambda x: {"likes": "Likes", "tweets": "Volumen de tweets"}[x],
         horizontal=True,
-        key=f"timeline_metric_{pais}",
+        key=f"timeline_metric_{pais}_{ctx}",
     )
 
     fig = px.line(
@@ -481,7 +481,7 @@ def render_pais(pais: str):
 
     st.subheader("Evolución semanal y hitos electorales")
     nota("Las líneas verticales marcan debates y fechas de votación. ¿Coinciden los picos con los eventos clave?")
-    render_timeline_hitos(pais, data)
+    render_timeline_hitos(pais, data, ctx="pais")
 
     st.divider()
 
@@ -605,7 +605,7 @@ with tab_general:
         "Cambia de país arriba para ver el contexto de cada elección."
     )
     data_pais_sel = df_prop[df_prop["candidato_pais"] == pais_sel].copy()
-    render_timeline_hitos(pais_sel, data_pais_sel)
+    render_timeline_hitos(pais_sel, data_pais_sel, ctx="home")
 
     st.divider()
 
