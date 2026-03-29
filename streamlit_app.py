@@ -498,41 +498,22 @@ with tab_general:
 
         with col:
             with st.container(border=True):
-                # Foto de perfil centrada
+                # st.image acepta URLs externas — el HTML <img> no funciona en Streamlit
                 if foto:
-                    st.markdown(
-                        f"<div style='text-align:center'>"
-                        f"<img src='{foto}' style='width:80px;height:80px;"
-                        f"border-radius:50%;object-fit:cover;"
-                        f"border:3px solid {color_c}'>"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-                # Nombre
+                    st.image(foto, width=80)
                 st.markdown(
-                    f"<p style='text-align:center;font-weight:600;font-size:0.9em;"
-                    f"margin:8px 0 2px;line-height:1.3'>{nombre}</p>",
-                    unsafe_allow_html=True,
-                )
-                # Vuelta
-                st.markdown(
-                    f"<p style='text-align:center;font-size:0.75em;color:#888;"
-                    f"margin:0 0 8px'>{row['candidato_vuelta']}</p>",
+                    f"**{nombre}**  \n"
+                    f"<span style='font-size:0.8em;color:#888'>{row['candidato_vuelta']}</span>",
                     unsafe_allow_html=True,
                 )
                 st.divider()
-                # Métricas
                 m1, m2 = st.columns(2)
-                m1.metric("❤️ Likes",    fmt(row["likes"]))
-                m2.metric("📄 Tweets",   fmt(row["tweets"]))
-                m1.metric("⚡ /tweet",   fmt(row["likes_x_tweet"]))
-                m2.metric("👁️ Views",   fmt(row["views"]))
+                m1.metric("❤️ Likes",  fmt(row["likes"]))
+                m2.metric("📄 Tweets", fmt(row["tweets"]))
+                m1.metric("⚡/tweet",  fmt(row["likes_x_tweet"]))
+                m2.metric("👁️ Views",  fmt(row["views"]))
                 if seguidores:
-                    st.markdown(
-                        f"<p style='text-align:center;font-size:0.78em;color:#888;"
-                        f"margin-top:4px'>👥 {fmt(seguidores)} seguidores</p>",
-                        unsafe_allow_html=True,
-                    )
+                    st.caption(f"👥 {fmt(seguidores)} seguidores")
 
     st.divider()
 
